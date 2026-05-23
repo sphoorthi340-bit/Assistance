@@ -1,0 +1,27 @@
+# Jarvis V1 — Core Dependencies
+# ================================
+# Terminal-first personal cognitive infrastructure
+# No web framework needed for V1
+
+# --- LLM Integration ---
+ollama>=0.4.0                    # Ollama Python SDK for local LLM inference
+httpx>=0.25.0                    # HTTP client (used by ollama SDK, also useful standalone)
+
+# --- Database ---
+# SQLite is built into Python stdlib — no extra package needed
+
+# --- Vector Memory ---
+chromadb>=0.4.22                 # Vector database for semantic memory storage
+sentence-transformers>=2.2.2     # Local embedding model (all-MiniLM-L6-v2)
+
+# --- Configuration ---
+pyyaml>=6.0                      # YAML config file parsing
+python-dotenv>=1.0.0             # .env file loading for environment overrides
+pydantic>=2.5.0                  # Settings validation and type safety
+pydantic-settings>=2.1.0         # Pydantic-based settings management
+
+# --- Terminal Interface ---
+rich>=13.7.0                     # Rich terminal output (colors, panels, markdown)
+
+# --- Utilities ---
+uuid7>=0.1.0                     # Time-sortable UUIDs for memory entries

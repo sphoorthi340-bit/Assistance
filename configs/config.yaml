@@ -1,0 +1,75 @@
+# Jarvis V1 — Configuration File
+# =================================
+# This is the primary configuration source.
+# Environment variables (prefixed with JARVIS_) override these values.
+# See .env.example for available overrides.
+
+llm:
+  # Model identifier as registered in Ollama
+  model: "deepseek-r1:7b"
+  # Ollama server URL (default local installation)
+  ollama_base_url: "http://localhost:11434"
+  # Strip <think>...</think> reasoning tokens from displayed output
+  # They are still stored internally for debugging
+  strip_thinking_tokens: true
+  # Request timeout in seconds
+  request_timeout: 120
+  # Temperature for generation (lower = more focused)
+  temperature: 0.7
+  # Number of retries on failure
+  max_retries: 3
+
+database:
+  # Path to SQLite database file (relative to project root)
+  path: "data/jarvis.db"
+  # Enable WAL mode for concurrent reads
+  wal_mode: true
+
+memory:
+  # Embedding model for semantic search (sentence-transformers)
+  embedding_model: "all-MiniLM-L6-v2"
+  # Path to ChromaDB persistent storage
+  chromadb_path: "vector_db"
+  # ChromaDB collection name
+  collection_name: "jarvis_memories"
+  # Maximum number of memories retrieved per query
+  max_retrieved_memories: 3
+  # Maximum token budget for injected context
+  max_context_tokens: 500
+  # Number of recent conversation turns to include
+  conversation_history_turns: 10
+  # Minimum similarity score for memory retrieval (0.0–1.0)
+  similarity_threshold: 0.3
+  # Memory importance threshold — memories below this are deprioritized
+  importance_threshold: 0.4
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  # Directory for log files (relative to project root)
+  log_dir: "logs"
+  # Maximum log file size in bytes before rotation (5 MB)
+  max_file_size: 5242880
+  # Number of backup log files to keep
+  backup_count: 5
+  # Log format string
+  format: "%(asctime)s | %(name)-20s | %(levelname)-8s | %(message)s"
+
+system:
+  # System prompt template — {context} and {memories} are injected at runtime
+  system_prompt: |
+    You are Jarvis, a persistent personal cognitive assistant.
+    You help the user with projects, goals, academics, routines, and long-term planning.
+    You remember past conversations and important facts about the user.
+    You prioritize continuity, precision, and actionable support.
+
+    IMPORTANT RULES:
+    - You are NOT a chatbot. You are cognitive infrastructure.
+    - Be concise and direct. Avoid unnecessary pleasantries.
+    - Reference relevant past context when it aids the current conversation.
+    - If you don't know something, say so clearly.
+    - Prioritize the user's stated goals and projects.
+
+    {memories}
+
+    {conversation_history}

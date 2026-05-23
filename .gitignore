@@ -1,0 +1,38 @@
+# Jarvis V1 — Git Ignore Rules
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# --- Virtual Environment ---
+venv/
+.venv/
+env/
+
+# --- Runtime Data (generated, not tracked) ---
+data/*.db
+data/*.db-wal
+data/*.db-shm
+vector_db/
+logs/*.log
+
+# --- Sensitive Config ---
+.env
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
