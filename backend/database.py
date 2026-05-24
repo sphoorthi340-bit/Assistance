@@ -75,7 +75,91 @@ CREATE TABLE IF NOT EXISTS memories (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
 );
 
+-- =====================================================================
+-- Phase 2: Personal State Modeling tables
+-- =====================================================================
+
+-- Goals: long-term objectives with progress tracking
+CREATE TABLE IF NOT EXISTS goals (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    category TEXT DEFAULT 'personal',
+    target_type TEXT DEFAULT 'completion'
+        CHECK(target_type IN ('streak', 'count', 'completion', 'progress')),
+    target_value REAL,
+    current_value REAL DEFAULT 0,
+    status TEXT DEFAULT 'active'
+        CHECK(status IN ('active', 'paused', 'completed', 'abandoned')),
+    priority INTEGER DEFAULT 3 CHECK(priority >= 1 AND priority <= 5),
+    start_date TEXT,
+    deadline TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Habits: recurring behaviors to track
+CREATE TABLE IF NOT EXISTS habits (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    frequency TEXT DEFAULT 'daily'
+        CHECK(frequency IN ('daily', 'weekly', 'custom')),
+    category TEXT DEFAULT 'personal',
+    target_per_period REAL DEFAULT 1,
+    active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+-- Habit logs: individual completion records (powers streaks & analytics)
+CREATE TABLE IF NOT EXISTS habit_logs (
+    id TEXT PRIMARY KEY,
+    habit_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    completed INTEGER DEFAULT 1,
+    value REAL,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (habit_id) REFERENCES habits(id) ON DELETE CASCADE
+);
+
+-- Projects: active work items with progress tracking
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'active'
+        CHECK(status IN ('active', 'paused', 'completed', 'archived')),
+    progress_percentage REAL DEFAULT 0
+        CHECK(progress_percentage >= 0 AND progress_percentage <= 100),
+    current_blocker TEXT,
+    next_step TEXT,
+    priority INTEGER DEFAULT 3 CHECK(priority >= 1 AND priority <= 5),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_worked_at TEXT
+);
+
+-- Project tasks: granular work items within projects
+CREATE TABLE IF NOT EXISTS project_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'pending'
+        CHECK(status IN ('pending', 'in_progress', 'completed', 'cancelled')),
+    due_date TEXT,
+    priority INTEGER DEFAULT 3 CHECK(priority >= 1 AND priority <= 5),
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+-- =====================================================================
 -- Performance indexes
+-- =====================================================================
+
+-- Phase 1 indexes
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp
@@ -86,6 +170,20 @@ CREATE INDEX IF NOT EXISTS idx_memories_importance
     ON memories(importance DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_created
     ON memories(created_at DESC);
+
+-- Phase 2 indexes
+CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);
+CREATE INDEX IF NOT EXISTS idx_goals_category ON goals(category);
+CREATE INDEX IF NOT EXISTS idx_goals_deadline ON goals(deadline);
+CREATE INDEX IF NOT EXISTS idx_habits_active ON habits(active);
+CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_id ON habit_logs(habit_id);
+CREATE INDEX IF NOT EXISTS idx_habit_logs_date ON habit_logs(date DESC);
+CREATE INDEX IF NOT EXISTS idx_habit_logs_habit_date
+    ON habit_logs(habit_id, date);
+CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_project_tasks_due ON project_tasks(due_date);
 """
 
 
@@ -405,6 +503,365 @@ class DatabaseManager:
         return deleted
 
     # -------------------------------------------------------------------
+    # Goal CRUD
+    # -------------------------------------------------------------------
+
+    def create_goal(
+        self,
+        goal_id: str,
+        title: str,
+        description: Optional[str] = None,
+        category: str = "personal",
+        target_type: str = "completion",
+        target_value: Optional[float] = None,
+        priority: int = 3,
+        start_date: Optional[str] = None,
+        deadline: Optional[str] = None,
+    ) -> None:
+        """Insert a new goal row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO goals "
+                "(id, title, description, category, target_type, target_value, "
+                "current_value, status, priority, start_date, deadline, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?)",
+                (goal_id, title, description, category, target_type,
+                 target_value, priority, start_date, deadline, now, now),
+            )
+
+    def get_goal(self, goal_id: str) -> Optional[dict]:
+        """Get a single goal by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM goals WHERE id = ?", (goal_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_goals(
+        self,
+        status: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> list[dict]:
+        """List goals with optional filters."""
+        query = "SELECT * FROM goals WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+        query += " ORDER BY priority ASC, created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_goal(self, goal_id: str, **fields) -> None:
+        """Update arbitrary fields on a goal. Caller must validate fields."""
+        if not fields:
+            return
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [goal_id]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE goals SET {set_clause} WHERE id = ?", values
+            )
+
+    def delete_goal(self, goal_id: str) -> bool:
+        """Delete a goal by ID. Returns True if deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+        return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # Habit CRUD
+    # -------------------------------------------------------------------
+
+    def create_habit(
+        self,
+        habit_id: str,
+        name: str,
+        description: Optional[str] = None,
+        frequency: str = "daily",
+        category: str = "personal",
+        target_per_period: float = 1,
+    ) -> None:
+        """Insert a new habit row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO habits "
+                "(id, name, description, frequency, category, "
+                "target_per_period, active, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+                (habit_id, name, description, frequency, category,
+                 target_per_period, now),
+            )
+
+    def get_habit(self, habit_id: str) -> Optional[dict]:
+        """Get a single habit by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM habits WHERE id = ?", (habit_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_habits(self, active_only: bool = True) -> list[dict]:
+        """List habits, optionally filtering to active only."""
+        query = "SELECT * FROM habits"
+        params: list = []
+        if active_only:
+            query += " WHERE active = 1"
+        query += " ORDER BY created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_habit(self, habit_id: str, **fields) -> None:
+        """Update arbitrary fields on a habit."""
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [habit_id]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE habits SET {set_clause} WHERE id = ?", values
+            )
+
+    def delete_habit(self, habit_id: str) -> bool:
+        """Delete a habit and its logs (CASCADE). Returns True if deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM habits WHERE id = ?", (habit_id,))
+        return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # Habit Log CRUD
+    # -------------------------------------------------------------------
+
+    def create_habit_log(
+        self,
+        log_id: str,
+        habit_id: str,
+        date: str,
+        completed: bool = True,
+        value: Optional[float] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        """Insert a new habit log entry."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO habit_logs "
+                "(id, habit_id, date, completed, value, notes, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (log_id, habit_id, date, int(completed), value, notes, now),
+            )
+
+    def get_habit_log_by_date(
+        self, habit_id: str, date: str
+    ) -> Optional[dict]:
+        """Get a habit log for a specific habit and date."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM habit_logs WHERE habit_id = ? AND date = ?",
+                (habit_id, date),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_habit_log(self, log_id: str, **fields) -> None:
+        """Update fields on a habit log."""
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [log_id]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE habit_logs SET {set_clause} WHERE id = ?", values
+            )
+
+    def list_habit_logs(
+        self,
+        habit_id: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        limit: int = 30,
+    ) -> list[dict]:
+        """List habit logs for a habit with optional date range."""
+        query = "SELECT * FROM habit_logs WHERE habit_id = ?"
+        params: list = [habit_id]
+        if start_date:
+            query += " AND date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND date <= ?"
+            params.append(end_date)
+        query += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_completed_habit_dates(self, habit_id: str) -> list[str]:
+        """Get all dates where a habit was completed, sorted descending."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT date FROM habit_logs "
+                "WHERE habit_id = ? AND completed = 1 "
+                "ORDER BY date DESC",
+                (habit_id,),
+            ).fetchall()
+        return [row["date"] for row in rows]
+
+    # -------------------------------------------------------------------
+    # Project CRUD
+    # -------------------------------------------------------------------
+
+    def create_project(
+        self,
+        project_id: str,
+        name: str,
+        description: Optional[str] = None,
+        priority: int = 3,
+    ) -> None:
+        """Insert a new project row."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO projects "
+                "(id, name, description, status, progress_percentage, "
+                "priority, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'active', 0, ?, ?, ?)",
+                (project_id, name, description, priority, now, now),
+            )
+
+    def get_project(self, project_id: str) -> Optional[dict]:
+        """Get a single project by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_projects(self, status: Optional[str] = None) -> list[dict]:
+        """List projects with optional status filter."""
+        query = "SELECT * FROM projects"
+        params: list = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY priority ASC, created_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_project(self, project_id: str, **fields) -> None:
+        """Update arbitrary fields on a project."""
+        if not fields:
+            return
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [project_id]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE projects SET {set_clause} WHERE id = ?", values
+            )
+
+    def delete_project(self, project_id: str) -> bool:
+        """Delete a project and its tasks (CASCADE). Returns True if deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM projects WHERE id = ?", (project_id,)
+            )
+        return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # Project Task CRUD
+    # -------------------------------------------------------------------
+
+    def create_project_task(
+        self,
+        task_id: str,
+        project_id: str,
+        title: str,
+        description: Optional[str] = None,
+        due_date: Optional[str] = None,
+        priority: int = 3,
+    ) -> None:
+        """Insert a new project task."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO project_tasks "
+                "(id, project_id, title, description, status, due_date, "
+                "priority, created_at) "
+                "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (task_id, project_id, title, description, due_date,
+                 priority, now),
+            )
+
+    def get_project_task(self, task_id: str) -> Optional[dict]:
+        """Get a single project task by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_project_tasks(
+        self,
+        project_id: str,
+        status: Optional[str] = None,
+    ) -> list[dict]:
+        """List tasks for a project with optional status filter."""
+        query = "SELECT * FROM project_tasks WHERE project_id = ?"
+        params: list = [project_id]
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY priority ASC, created_at ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_project_task(self, task_id: str, **fields) -> None:
+        """Update arbitrary fields on a project task."""
+        if not fields:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [task_id]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE project_tasks SET {set_clause} WHERE id = ?", values
+            )
+
+    def get_project_task_counts(self, project_id: str) -> dict:
+        """Get task count breakdown for a project."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as count FROM project_tasks "
+                "WHERE project_id = ? GROUP BY status",
+                (project_id,),
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM project_tasks WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()[0]
+        counts = {row["status"]: row["count"] for row in rows}
+        counts["total"] = total
+        return counts
+
+    def delete_project_task(self, task_id: str) -> bool:
+        """Delete a project task by ID. Returns True if deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM project_tasks WHERE id = ?", (task_id,)
+            )
+        return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
     # Utility
     # -------------------------------------------------------------------
 
@@ -425,10 +882,29 @@ class DatabaseManager:
                 "GROUP BY memory_type ORDER BY count DESC"
             ).fetchall()
 
+            # Phase 2 counts
+            goal_count = conn.execute(
+                "SELECT COUNT(*) FROM goals WHERE status = 'active'"
+            ).fetchone()[0]
+            habit_count = conn.execute(
+                "SELECT COUNT(*) FROM habits WHERE active = 1"
+            ).fetchone()[0]
+            project_count = conn.execute(
+                "SELECT COUNT(*) FROM projects WHERE status = 'active'"
+            ).fetchone()[0]
+            task_count = conn.execute(
+                "SELECT COUNT(*) FROM project_tasks"
+            ).fetchone()[0]
+
         return {
             "conversations": conv_count,
             "messages": msg_count,
             "memories": mem_count,
             "memories_by_type": {row["memory_type"]: row["count"] for row in mem_by_type},
+            "goals": goal_count,
+            "habits": habit_count,
+            "projects": project_count,
+            "tasks": task_count,
             "db_path": str(self._db_path),
         }
+

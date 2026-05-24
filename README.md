@@ -1,4 +1,4 @@
-# Jarvis V1 — Personal Cognitive Infrastructure
+# Jarvis V2 — Personal Cognitive Infrastructure
 
 A local-first, persistent AI assistant built as foundational cognitive infrastructure.  
 **Not a chatbot.** A system designed for continuity, memory, context preservation, and long-term behavioral intelligence.
@@ -10,30 +10,32 @@ A local-first, persistent AI assistant built as foundational cognitive infrastru
 - Precision of retrieval > volume of context
 - Clean memory flow > feature completeness
 - Stability > sophistication
+- Deterministic systems separated from LLM reasoning
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                Terminal CLI (main.py)            │
-├──────────┬──────────┬──────────┬────────────────┤
-│ Context  │   LLM    │ Memory   │   Database     │
-│ Builder  │ (Ollama) │ Manager  │   (SQLite)     │
-│          │          │          │                │
-│ Retrieves│ DeepSeek │ Extract  │ Conversations  │
-│ memories │ R1 7B    │ Store    │ Messages       │
-│ + history│          │ Retrieve │ Memories       │
-├──────────┘──────────┤──────────┤────────────────┤
-│                     │  Vector  │                │
-│                     │  Store   │                │
-│                     │ (ChromaDB)                │
-└─────────────────────┴──────────┴────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                  Terminal CLI (main.py)                      │
+├──────────┬──────────┬──────────┬──────────┬────────────────┤
+│ Context  │   LLM    │ Memory   │  State   │   Database     │
+│ Builder  │ (Ollama) │ Manager  │ Managers │   (SQLite)     │
+│          │          │          │          │                │
+│ Retrieves│ DeepSeek │ Extract  │ Goals    │ Conversations  │
+│ memories │ R1 7B    │ Store    │ Habits   │ Messages       │
+│ + history│          │ Retrieve │ Projects │ Memories       │
+│          │          │          │ Analytics│ Goals/Habits   │
+├──────────┘──────────┤──────────┤──────────┤ Projects/Tasks │
+│                     │  Vector  │          │                │
+│                     │  Store   │          │                │
+│                     │ (ChromaDB)          │                │
+└─────────────────────┴──────────┴──────────┴────────────────┘
 ```
 
 ## Tech Stack
 
 | Component     | Technology                  |
-|---------------|-----------------------------|
+|---------------|------------------------------|
 | Language      | Python 3.11                 |
 | LLM Runtime   | Ollama                      |
 | LLM Model     | DeepSeek-R1 7B              |
@@ -58,7 +60,8 @@ Jarvis/
 ├── backend/
 │   ├── __init__.py
 │   ├── logger.py            # Rotating file + console logging
-│   ├── database.py          # SQLite manager (conversations, messages, memories)
+│   ├── database.py          # SQLite manager (conversations, messages, memories,
+│   │                        #   goals, habits, projects, tasks)
 │   ├── llm.py               # Ollama wrapper with think-token parsing
 │   └── context.py           # Prompt assembly with memory injection
 ├── memory/
@@ -66,6 +69,12 @@ Jarvis/
 │   ├── vector_store.py      # ChromaDB semantic search
 │   ├── extractor.py         # Heuristic + LLM memory extraction
 │   └── manager.py           # Memory lifecycle orchestration
+├── state/                   # Phase 2: Personal State Modeling
+│   ├── __init__.py
+│   ├── goal_manager.py      # Goal CRUD + status transitions
+│   ├── habit_manager.py     # Habit CRUD + streak tracking
+│   ├── project_manager.py   # Project + task management
+│   └── analytics_manager.py # Deterministic analytics + accountability
 ├── vector_db/               # ChromaDB persistent storage (auto-created)
 ├── data/                    # SQLite database (auto-created)
 ├── documents/               # Future: PDF/document storage for RAG
@@ -117,7 +126,8 @@ The system will:
 1. Initialize SQLite database (`data/jarvis.db`)
 2. Connect to Ollama and verify the model
 3. Initialize ChromaDB vector store
-4. Start the interactive chat loop
+4. Initialize personal state systems
+5. Start the interactive chat loop
 
 ## Usage
 
@@ -130,15 +140,60 @@ Type naturally. Jarvis will:
 
 ### Commands
 
+#### Memory & Chat
+
 | Command | Description |
 |---------|-------------|
 | `/new` | Start a new conversation |
 | `/history` | Show current conversation history |
 | `/memories` | View all stored memories |
-| `/stats` | System statistics (conversations, messages, memories) |
 | `/remember <text>` | Manually store a memory |
 | `/forget <id>` | Delete a memory by ID prefix |
-| `/help` | List available commands |
+
+#### Goals
+
+| Command | Description |
+|---------|-------------|
+| `/goal add <title>` | Add a new goal |
+| `/goal list [status]` | List goals (default: active) |
+| `/goal update <id> <field> <value>` | Update a goal field |
+| `/goal complete <id>` | Mark a goal as completed |
+| `/goal pause <id>` | Pause a goal |
+| `/goal resume <id>` | Resume a paused goal |
+| `/goal delete <id>` | Delete a goal |
+
+#### Habits
+
+| Command | Description |
+|---------|-------------|
+| `/habit add <name>` | Add a new habit to track |
+| `/habit list` | List active habits |
+| `/habit log <name-or-id> [notes]` | Log a habit completion |
+| `/habit stats [name-or-id]` | Show streak & completion stats |
+| `/habit deactivate <id>` | Deactivate a habit |
+| `/habit activate <id>` | Reactivate a habit |
+| `/habit delete <id>` | Delete a habit and its logs |
+
+#### Projects & Tasks
+
+| Command | Description |
+|---------|-------------|
+| `/project add <name>` | Add a new project |
+| `/project list [status]` | List projects (default: active) |
+| `/project update <id> <field> <value>` | Update a project field |
+| `/project status [id]` | Show project status details |
+| `/project complete <id>` | Complete a project |
+| `/task add <project-id> <title>` | Add a task to a project |
+| `/task list <project-id>` | List tasks for a project |
+| `/task complete <task-id>` | Mark a task as completed |
+
+#### System
+
+| Command | Description |
+|---------|-------------|
+| `/stats` | System statistics (memory, goals, habits, projects) |
+| `/accountability` | Run the accountability report |
+| `/help` | List all commands |
 | `/quit` | Exit (auto-saves conversation summary) |
 
 ## Configuration
@@ -183,16 +238,56 @@ Settings are loaded with this priority (highest wins):
 | `fact` | "I'm a computer science student" |
 | `summary` | Auto-generated conversation summaries |
 
+## Phase 2: Personal State Modeling
+
+Phase 2 adds persistent longitudinal state tracking — structured systems for tracking goals, habits, projects, and behavioral patterns over time.
+
+### Goals
+
+Track long-term objectives with progress monitoring:
+- Categories: fitness, academic, project, personal, etc.
+- Target types: streak, count, completion, progress
+- Priority levels (1-5, 1 = highest)
+- Deadline tracking with overdue detection
+
+### Habits
+
+Track recurring behaviors with streak and consistency analysis:
+- Frequency: daily, weekly, custom
+- Automatic streak counting (current + longest)
+- Completion logging with notes
+- Historical log analysis
+
+### Projects & Tasks
+
+Track active work items with granular task management:
+- Progress auto-calculation from task completion
+- Blocker and next-step tracking
+- Overdue task detection
+- Activity staleness monitoring
+
+### Analytics & Accountability
+
+Deterministic analytics — no LLM reasoning, pure SQL queries:
+- **Streak counting**: Current and longest streaks per habit
+- **Completion rates**: Percentage over configurable periods
+- **Consistency score**: Overall adherence across all habits
+- **Overdue detection**: Goals past deadline, tasks past due
+- **Staleness detection**: Projects not updated recently
+
+The accountability report generates reflective observations:
+- "You've completed morning run 18 out of the last 30 days (60%)."
+- "Disaster Mesh has not been updated in 12 days."
+- "Your reading streak broke 3 days ago after reaching 14 days."
+
+Tone: reflective, analytical, supportive, observant. Never guilt-driven.
+
 ## Future Roadmap
 
-This V1 is the foundation. Planned expansions:
-
 - [ ] RAG pipeline (PDF/document ingestion and retrieval)
-- [ ] Task tracking and management
 - [ ] Behavioral analytics and pattern detection
-- [ ] Habit tracking and accountability system
 - [ ] Proactive reminders
-- [ ] Longitudinal pattern analysis
+- [ ] Longitudinal trend analysis
 - [ ] Multi-model orchestration
 - [ ] Dashboard UI
 - [ ] Local automation integrations
@@ -204,6 +299,7 @@ This V1 is the foundation. Planned expansions:
 - **Modularity over monolith** — Each subsystem is independent and swappable
 - **Observability over opacity** — Comprehensive logging at every layer
 - **Maintainability over cleverness** — Clean code that's easy to extend
+- **Determinism over magic** — Analytics are SQL queries, not LLM guesses
 
 ## License
 
