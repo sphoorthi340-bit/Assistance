@@ -308,7 +308,9 @@ Data:
 """
         try:
             original_model = self._llm._model
-            self._llm._model = self._settings.local_models.fast
+            # Resolve alias to plain string for Ollama
+            fast_model = self._settings.local_models.get_model_for("fast", "ollama") or "llama3.2:1b"
+            self._llm._model = fast_model
             
             resp = self._llm.chat([{"role": "user", "content": prompt}])
             

@@ -117,20 +117,23 @@ class ModelRouter:
                     )
                 else:
                     logger.warning("Cloud fallback failed, attempting local fallback")
-                    fallback = self._get_best_local("Cloud fallback")
+                    # Determine tier from the original classification so the fallback model is correct
+                    orig_tier = "reasoning"  # default for cloud-routed requests
+                    fallback = self._get_best_local(orig_tier, "Cloud failed")
                     decision.selected_provider = fallback[0]
                     decision.selected_model = fallback[1]
-                    decision.reason += " (Cloud failed, fallback to local)"
+                    decision.reason += f" (Cloud failed, fallback to local: {fallback[2]})"
                     response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
             else:
                 response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
                 
         except Exception as e:
             logger.error("Routing execution failed: %s", e)
-            fallback = self._get_best_local(f"Error fallback: {e}")
+            orig_tier = "reasoning"
+            fallback = self._get_best_local(orig_tier, f"Error fallback: {e}")
             decision.selected_provider = fallback[0]
             decision.selected_model = fallback[1]
-            decision.reason = f"Fallback after error: {e}"
+            decision.reason = f"Fallback after error: {e} | {fallback[2]}"
             response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
 
         # 4. Log routing decision

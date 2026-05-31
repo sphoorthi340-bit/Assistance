@@ -137,23 +137,26 @@ class CloudLLM:
 
                 if response:
                     selected_provider = provider
-                    # Add remaining metadata
                     response.provider = provider
                     response.model = selected_model
                     response.response_time_ms = int((time.time() - start_time) * 1000)
                     response.compressed = compressed
-                    
-                    # Calculate cost
                     cost_in = (response.tokens_in / 1000) * config.cost_per_1k_input
                     cost_out = (response.tokens_out / 1000) * config.cost_per_1k_output
                     response.estimated_cost_usd = cost_in + cost_out
-                    
                     self._pm.record_call(provider, response.response_time_ms, success=True)
                     break
             except Exception as e:
-                logger.error("Cloud provider %s failed: %s", provider, e)
-                self._pm.record_call(provider, (time.time() - start_time) * 1000, success=False)
-                # Try next provider
+                err_str = str(e).lower()
+                # Detect quota/rate-limit errors and mark the provider accordingly
+                if any(kw in err_str for kw in ("429", "quota", "rate_limit", "resource_exhausted",
+                                                 "quota_exceeded", "requestsperday", "per_day")):
+                    logger.warning("Quota error from %s — marking quota_exhausted: %s", provider, e)
+                    self._pm.record_quota_error(provider)
+                else:
+                    logger.error("Cloud provider %s failed: %s", provider, e)
+                    self._pm.record_call(provider, (time.time() - start_time) * 1000, success=False)
+                # Try next provider in all cases
 
         if not response:
             logger.error("All cloud providers failed or are unavailable/exhausted")
@@ -181,9 +184,12 @@ class CloudLLM:
 
     def _compress_context(self, messages: list[dict]) -> str:
         """Use local fast model to compress conversation history."""
-        # Note: We must temporarily override the model to use the fast one
         original_model = self._local_compressor._model
-        self._local_compressor._model = self._settings.local_models.fast
+        # Resolve the alias to a plain string for Ollama (compressor always uses Ollama)
+        fast_model = self._settings.local_models.get_model_for("fast", "ollama")
+        if not fast_model:
+            fast_model = "llama3.2:1b"  # safe default
+        self._local_compressor._model = fast_model
         
         history_text = ""
         for m in messages:

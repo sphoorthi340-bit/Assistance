@@ -316,7 +316,8 @@ Return ONLY the JSON list. If no new facts, return []."""
             # Force fast model for extraction
             from configs.settings import get_settings
             settings = get_settings()
-            self._llm._model = settings.local_models.fast
+            fast_model = settings.local_models.get_model_for("fast", "ollama") or "llama3.2:1b"
+            self._llm._model = fast_model
             
             response = self._llm._client.chat(
                 model=self._llm._model,

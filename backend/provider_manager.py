@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 class HealthStatus:
     """Health check result for a single provider."""
     provider_name: str
-    status: str = "unknown"         # healthy, unhealthy, disabled, unknown
+    status: str = "unknown"         # healthy | unhealthy | quota_exhausted | disabled | unknown
     latency_ms: float = 0.0
     available_models: list[str] = field(default_factory=list)
     error: str = ""
@@ -129,6 +129,15 @@ class ProviderManager:
             )
             self._health_cache[provider_name] = status
             return status
+
+        # If it's temporarily disabled (like for quota exhaustion), don't ping, just return the cached status
+        if provider_name in self._disabled_until:
+            if datetime.now(timezone.utc) < self._disabled_until[provider_name]:
+                return self._health_cache.get(provider_name, HealthStatus(
+                    provider_name=provider_name,
+                    status="disabled",
+                    error="Temporarily disabled"
+                ))
 
         start_time = time.time()
 
@@ -239,8 +248,9 @@ class ProviderManager:
         """
         Authenticate and verify a cloud provider is truly reachable.
 
-        Healthy = SDK imported + API key present + lightweight listing call succeeds.
-        This avoids expensive completion requests on startup.
+        Healthy    = SDK imported + API key present + lightweight listing call succeeds.
+        Quota      = 429 / resource_exhausted / quota_exceeded response.
+        Unhealthy  = Auth failure, SDK missing, or network error.
         """
         env_var = self._API_KEY_ENVVARS.get(provider_name, "")
         api_key = os.environ.get(env_var, "")
@@ -256,7 +266,6 @@ class ProviderManager:
             if provider_name == "openai":
                 import openai
                 client = openai.OpenAI(api_key=api_key)
-                # Lightweight: list available models (no tokens spent)
                 models = client.models.list()
                 available = [m.id for m in models.data][:5]
                 return HealthStatus(
@@ -268,7 +277,6 @@ class ProviderManager:
             elif provider_name == "gemini":
                 import google.generativeai as genai
                 genai.configure(api_key=api_key)
-                # List models — lightweight metadata call
                 models = list(genai.list_models())
                 available = [m.name for m in models if "generateContent" in m.supported_generation_methods][:5]
                 return HealthStatus(
@@ -280,7 +288,6 @@ class ProviderManager:
             elif provider_name == "anthropic":
                 import anthropic
                 client = anthropic.Anthropic(api_key=api_key)
-                # Anthropic has no free metadata endpoint — use a minimal 1-token completion
                 resp = client.messages.create(
                     model=self._get_provider_config("anthropic").model or "claude-3-5-haiku-20241022",
                     max_tokens=1,
@@ -299,13 +306,21 @@ class ProviderManager:
                 error=f"SDK missing: {e}",
             )
         except Exception as e:
-            # Classify common error types for better diagnostics
             err_str = str(e).lower()
-            if "api key" in err_str or "authentication" in err_str or "invalid_api_key" in err_str or "unauthorized" in err_str:
+            # Quota / rate limit detection
+            if any(kw in err_str for kw in ("429", "quota", "rate_limit", "resource_exhausted",
+                                             "quota_exceeded", "requestsperday", "per_day")):
+                logger.warning("Provider %s quota exhausted: %s", provider_name, e)
+                return HealthStatus(
+                    provider_name=provider_name,
+                    status="quota_exhausted",
+                    error=f"Quota exhausted: {e}",
+                )
+            # Auth / access errors
+            if any(kw in err_str for kw in ("api key", "authentication", "invalid_api_key",
+                                             "unauthorized", "permission_denied")):
                 reason = "Authentication failed (invalid API key)"
-            elif "quota" in err_str or "rate" in err_str:
-                reason = "Quota/rate limit exceeded"
-            elif "connect" in err_str or "timeout" in err_str or "network" in err_str:
+            elif any(kw in err_str for kw in ("connect", "timeout", "network", "connection")):
                 reason = "Network error (cannot reach provider)"
             else:
                 reason = str(e)
@@ -334,13 +349,15 @@ class ProviderManager:
         if not config.enabled:
             return False
 
-        # Check cached health
+        # Check cached health — quota_exhausted is treated as unavailable
         cached = self._health_cache.get(provider_name)
-        if cached and cached.status == "healthy":
-            # Also check quota
-            if cached.quota_remaining is not None and cached.quota_remaining <= 0:
+        if cached:
+            if cached.status in ("unhealthy", "disabled", "quota_exhausted"):
                 return False
-            return True
+            if cached.status == "healthy":
+                if cached.quota_remaining is not None and cached.quota_remaining <= 0:
+                    return False
+                return True
 
         # No cached status — run a quick check
         status = self.check_health(provider_name)
@@ -381,10 +398,31 @@ class ProviderManager:
             provider_name, duration_s
         )
 
-    def enable(self, provider_name: str):
-        """Re-enable a temporarily disabled provider."""
-        self._disabled_until.pop(provider_name, None)
-        logger.info("Provider %s re-enabled", provider_name)
+    def record_quota_error(self, provider_name: str):
+        """
+        Record a runtime quota/rate-limit error (HTTP 429) from a provider.
+        Updates the health cache to quota_exhausted and temporarily disables the provider.
+        """
+        cached = self._health_cache.get(provider_name)
+        if cached:
+            cached.status = "quota_exhausted"
+            cached.error = "Quota exhausted (HTTP 429 received during inference)"
+            self._health_cache[provider_name] = cached
+            self._persist_health(cached)
+        else:
+            status = HealthStatus(
+                provider_name=provider_name,
+                status="quota_exhausted",
+                error="Quota exhausted (HTTP 429 received during inference)",
+                last_check=datetime.now(timezone.utc).isoformat(),
+            )
+            self._health_cache[provider_name] = status
+            self._persist_health(status)
+
+        # Disable for remainder of the day (86400s) so router bypasses it
+        self.disable_temporarily(provider_name, duration_s=86400)
+        logger.warning("Provider %s marked quota_exhausted and disabled for 24h", provider_name)
+
 
     # -------------------------------------------------------------------
     # Optimal provider selection
