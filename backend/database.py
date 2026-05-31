@@ -21,6 +21,7 @@ Future extensibility:
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -156,6 +157,43 @@ CREATE TABLE IF NOT EXISTS project_tasks (
 );
 
 -- =====================================================================
+-- Phase 2.5: Action Engine & Knowledge Pipeline
+-- =====================================================================
+
+-- Action Log: audit trail for deterministic actions
+CREATE TABLE IF NOT EXISTS action_log (
+    id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    parameters TEXT NOT NULL,       -- JSON
+    result_status TEXT NOT NULL,     -- 'success', 'error', 'cancelled'
+    result_message TEXT,
+    confidence REAL,
+    user_message TEXT,              -- original message that triggered this
+    execution_time_ms INTEGER,
+    created_at TEXT NOT NULL,
+    undo_intent TEXT,               -- Intent for undo action
+    undo_parameters TEXT,           -- JSON for undo action
+    reversible INTEGER DEFAULT 0,   -- Boolean
+    action_source TEXT,             -- 'user', 'scheduler', etc.
+    trigger_type TEXT,              -- 'explicit_request', 'scheduled_task', etc.
+    trigger_context TEXT            -- Optional JSON context
+);
+
+-- Documents: ingested knowledge sources for RAG
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    source_path TEXT NOT NULL UNIQUE,
+    title TEXT,
+    format TEXT NOT NULL,
+    chunk_count INTEGER DEFAULT 0,
+    word_count INTEGER DEFAULT 0,
+    file_hash TEXT,                -- SHA-256 for change detection
+    ingested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    metadata TEXT DEFAULT '{}'
+);
+
+-- =====================================================================
 -- Performance indexes
 -- =====================================================================
 
@@ -184,6 +222,11 @@ CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_project_tasks_due ON project_tasks(due_date);
+
+-- Phase 2.5 indexes
+CREATE INDEX IF NOT EXISTS idx_action_log_tool ON action_log(tool_name);
+CREATE INDEX IF NOT EXISTS idx_action_log_created ON action_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(source_path);
 """
 
 
@@ -205,6 +248,7 @@ class DatabaseManager:
 
         self._db_path = settings.resolve_path(settings.database.path)
         self._wal_mode = settings.database.wal_mode
+        self._local = threading.local()
         self._ensure_directory()
         self.initialize()
 
@@ -214,27 +258,49 @@ class DatabaseManager:
 
     def _connect(self) -> sqlite3.Connection:
         """
-        Create a new database connection with optimal settings.
+        Create or retrieve a thread-local database connection with optimal settings.
         
         Each connection enables:
         - WAL mode (if configured) for concurrent reads
         - Foreign key enforcement
         - Row factory for dict-like access
         """
-        conn = sqlite3.connect(
-            str(self._db_path),
-            detect_types=sqlite3.PARSE_DECLTYPES,
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        if self._wal_mode:
-            conn.execute("PRAGMA journal_mode = WAL")
-        return conn
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(
+                str(self._db_path),
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                check_same_thread=False
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            if self._wal_mode:
+                conn.execute("PRAGMA journal_mode = WAL")
+            self._local.conn = conn
+        return self._local.conn
 
     def initialize(self) -> None:
-        """Create tables and indexes if they don't exist."""
+        """Create tables and indexes if they don't exist, handle migrations."""
         with self._connect() as conn:
             conn.executescript(_SCHEMA_SQL)
+            
+        try:
+            from backend.db_migrations import run_migrations
+            run_migrations(str(self._db_path))
+        except ImportError as e:
+            logger.warning("Could not run Phase 3 migrations: %s", e)
+            
+            # Migration: Ensure action_log has new Phase 3 columns
+            # In SQLite we can safely execute ALTER TABLE ADD COLUMN. If it fails due to existing, we ignore.
+            try:
+                conn.execute("ALTER TABLE action_log ADD COLUMN undo_intent TEXT")
+                conn.execute("ALTER TABLE action_log ADD COLUMN undo_parameters TEXT")
+                conn.execute("ALTER TABLE action_log ADD COLUMN reversible INTEGER DEFAULT 0")
+                conn.execute("ALTER TABLE action_log ADD COLUMN action_source TEXT")
+                conn.execute("ALTER TABLE action_log ADD COLUMN trigger_type TEXT")
+                conn.execute("ALTER TABLE action_log ADD COLUMN trigger_context TEXT")
+            except sqlite3.OperationalError:
+                pass # Columns already exist
+                
         logger.info("Database initialized at %s", self._db_path)
 
     # -------------------------------------------------------------------
@@ -860,6 +926,158 @@ class DatabaseManager:
                 "DELETE FROM project_tasks WHERE id = ?", (task_id,)
             )
         return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # Document CRUD
+    # -------------------------------------------------------------------
+
+    def add_document(
+        self,
+        doc_id: str,
+        source_path: str,
+        format: str,
+        title: Optional[str] = None,
+        chunk_count: int = 0,
+        word_count: int = 0,
+        file_hash: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Insert a new document row."""
+        now = datetime.now(timezone.utc).isoformat()
+        meta_json = json.dumps(metadata or {})
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO documents "
+                "(id, source_path, title, format, chunk_count, word_count, file_hash, ingested_at, updated_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, source_path, title, format, chunk_count, word_count, file_hash, now, now, meta_json),
+            )
+
+    def get_document_by_path(self, source_path: str) -> Optional[dict]:
+        """Get a document by source_path."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM documents WHERE source_path = ?", (source_path,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_documents(self) -> list[dict]:
+        """List all documents."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM documents ORDER BY ingested_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_document(self, doc_id: str) -> bool:
+        """Delete a document by ID. Returns True if deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM documents WHERE id = ?", (doc_id,)
+            )
+        return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # Action Log CRUD
+    # -------------------------------------------------------------------
+
+    def log_action(
+        self,
+        tool_name: str,
+        parameters: dict,
+        result_status: str,
+        result_message: Optional[str] = None,
+        confidence: Optional[float] = None,
+        user_message: Optional[str] = None,
+        execution_time_ms: Optional[int] = None,
+        undo_intent: Optional[str] = None,
+        undo_parameters: Optional[dict] = None,
+        reversible: bool = False,
+        action_source: Optional[str] = "user",
+        trigger_type: Optional[str] = "explicit_request",
+        trigger_context: Optional[dict] = None,
+    ) -> str:
+        """Log an executed action to the database with provenance."""
+        action_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO action_log (
+                    id, tool_name, parameters, result_status, result_message, 
+                    confidence, user_message, execution_time_ms, created_at,
+                    undo_intent, undo_parameters, reversible,
+                    action_source, trigger_type, trigger_context
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action_id,
+                    tool_name,
+                    json.dumps(parameters),
+                    result_status,
+                    result_message,
+                    confidence,
+                    user_message,
+                    execution_time_ms,
+                    now,
+                    undo_intent,
+                    json.dumps(undo_parameters) if undo_parameters else None,
+                    1 if reversible else 0,
+                    action_source,
+                    trigger_type,
+                    json.dumps(trigger_context) if trigger_context else None,
+                )
+            )
+        return action_id
+        
+    def get_last_action_log(self, successful_only: bool = True) -> Optional[dict]:
+        """Fetch the most recent action executed."""
+        with self._connect() as conn:
+            query = "SELECT * FROM action_log"
+            if successful_only:
+                query += " WHERE result_status = 'success'"
+            query += " ORDER BY created_at DESC LIMIT 1"
+            
+            row = conn.execute(query).fetchone()
+            if not row:
+                return None
+                
+            return dict(row)
+
+    def get_action_log(self, action_id: str) -> Optional[dict]:
+        """Get an action log by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM action_log WHERE id = ?", (action_id,)
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("parameters"):
+            try:
+                d["parameters"] = json.loads(d["parameters"])
+            except Exception:
+                pass
+        return d
+
+    def list_action_logs(self, limit: int = 50) -> list[dict]:
+        """List recent action logs."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM action_log ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+            
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("parameters"):
+                try:
+                    d["parameters"] = json.loads(d["parameters"])
+                except Exception:
+                    pass
+            result.append(d)
+        return result
 
     # -------------------------------------------------------------------
     # Utility

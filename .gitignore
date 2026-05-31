@@ -1,4 +1,4 @@
-# Jarvis V1 — Git Ignore Rules
+# Jarvis V3 — Git Ignore Rules
 
 # --- Python ---
 __pycache__/
@@ -20,6 +20,7 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 vector_db/
+vector_db_backup_*/
 logs/*.log
 
 # --- Sensitive Config ---
@@ -36,3 +37,7 @@ logs/*.log
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Test / Scratch ---
+cleanup_test.py
+test_phase2.py

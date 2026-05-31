@@ -1,54 +1,48 @@
 """
-Jarvis V1 — Context Builder
-===============================
+Jarvis V2.5 — Unified Context Builder
+=======================================
 Assembles the complete prompt sent to the LLM by combining:
     1. System prompt (identity, rules)
-    2. Retrieved memories (semantic search results)
-    3. Recent conversation history (from SQLite)
+    2. State snapshot (goals, habits, projects)
+    3. Retrieved memories (semantic search results)
+    4. Knowledge chunks (from documents)
+    5. Recent conversation history
 
 Architecture decisions:
-    The LLM has NO memory of its own. Every response is generated
-    from a freshly assembled prompt that includes:
-    
-    - A system prompt defining Jarvis's identity and behavior
-    - Relevant memories retrieved from ChromaDB (semantic search)
-    - Recent conversation turns from SQLite (for continuity within session)
-    
-    Token budget management:
-    - Memories: ~500 tokens max (configurable)
-    - Conversation history: last N turns (configurable, default 10)
-    - System prompt: fixed template
-    - Total stays within the model's context window (8K for DeepSeek-R1 7B)
-
-    This is the CORE of the context retrieval flow:
-    user message → retrieve memories → build prompt → send to LLM
+    - Replaces old ContextBuilder with UnifiedContextBuilder (REV 3 & 4).
+    - Uses ContextRanker to enforce a strict token budget across all sources.
+    - All injected context is tagged with provenance metadata for transparency.
 """
 
+from datetime import datetime, timezone
 from typing import Optional
 
+from backend.context_ranker import ContextItem, ContextRanker
 from backend.database import DatabaseManager
 from backend.logger import get_logger
-from memory.manager import MemoryManager
 from configs.settings import get_settings
+from memory.manager import MemoryManager
+from state.goal_manager import GoalManager
+from state.habit_manager import HabitManager
+from state.project_manager import ProjectManager
 
 logger = get_logger(__name__)
 
 
-class ContextBuilder:
+class UnifiedContextBuilder:
     """
-    Builds the complete message list sent to the LLM for each request.
-    
-    Responsible for:
-    - Retrieving relevant memories via semantic search
-    - Formatting memories into a readable context block
-    - Pulling recent conversation history
-    - Assembling the final prompt with token budget awareness
+    Builds the complete message list sent to the LLM for each request,
+    unifying multiple context sources into a budgeted prompt.
     """
 
     def __init__(
         self,
         db: DatabaseManager,
         memory_manager: MemoryManager,
+        goal_manager: GoalManager,
+        habit_manager: HabitManager,
+        project_manager: ProjectManager,
+        knowledge_store=None,  # Optional until knowledge pipeline is ready
         settings=None,
     ):
         if settings is None:
@@ -56,15 +50,18 @@ class ContextBuilder:
 
         self._db = db
         self._memory = memory_manager
-        self._system_prompt_template = settings.system.system_prompt
-        self._max_context_tokens = settings.memory.max_context_tokens
-        self._max_retrieved = settings.memory.max_retrieved_memories
-        self._history_turns = settings.memory.conversation_history_turns
+        self._goals = goal_manager
+        self._habits = habit_manager
+        self._projects = project_manager
+        self._knowledge = knowledge_store
+        
+        self._settings = settings
+        self._ranker = ContextRanker()
+        self.last_assembled_context: list[ContextItem] = []
 
         logger.info(
-            "ContextBuilder initialized — history_turns=%d, "
-            "max_memories=%d, max_context_tokens=%d",
-            self._history_turns, self._max_retrieved, self._max_context_tokens,
+            "UnifiedContextBuilder initialized — total_budget=%d tokens",
+            self._settings.context.total_budget_tokens
         )
 
     def build_messages(
@@ -74,165 +71,209 @@ class ContextBuilder:
     ) -> list[dict]:
         """
         Build the complete message list for an LLM request.
-        
-        Flow:
-        1. Retrieve relevant memories for the user's message
-        2. Format memories into a context block
-        3. Get recent conversation history
-        4. Assemble: system prompt → history → current user message
-        
-        Args:
-            user_message: The current user input.
-            conversation_id: The active conversation UUID.
-        
-        Returns:
-            List of message dicts ready for OllamaClient.chat().
-            Format: [{"role": "system", "content": ...}, 
-                     {"role": "user/assistant", "content": ...}, ...]
         """
-        # Step 1: Retrieve relevant memories
-        memories = self._retrieve_and_format_memories(user_message)
+        # 1. Gather ContextItems from all sources
+        items: list[ContextItem] = []
+        
+        # We fetch items, but don't strictly enforce per-source budgets here.
+        # We let the Ranker handle the global budget, though we limit what we fetch.
+        
+        # State
+        state_items = self._get_state_snapshot()
+        items.extend(state_items)
+        
+        # Memories
+        memory_items = self._get_memories(user_message)
+        items.extend(memory_items)
+        
+        # Knowledge
+        knowledge_items = self._get_knowledge(user_message)
+        items.extend(knowledge_items)
+        
+        # History
+        history_items = self._get_history(conversation_id)
+        # History is treated a bit specially — we rank it, but we also format it 
+        # as alternating messages if possible, OR we inject it into the prompt.
+        # Actually, for standard LLM APIs, history is best passed as actual message objects,
+        # but to control tokens precisely, we can inject older history into the system prompt
+        # and only keep the last few turns as actual messages.
+        # For this implementation, we will pass history as actual alternating messages
+        # like the old ContextBuilder did, but we use the ranker to decide HOW MANY to keep.
+        
+        # 2. Rank and truncate items (excluding history which we handle separately for formatting)
+        ranked_context = self._ranker.rank_and_truncate(
+            items, 
+            budget_tokens=self._settings.context.total_budget_tokens - self._settings.context.history_budget_tokens
+        )
+        # TEMPORARY CONTEXT CLAMP
+        ranked_context = ranked_context[:3]
+        self.last_assembled_context = ranked_context
 
-        # Step 2: Get recent conversation history
-        history = self._get_conversation_history(conversation_id)
+        # 3. Format the ranked items by source
+        state_text = self._format_items([i for i in ranked_context if i.source == 'state'], "CURRENT SYSTEM STATE")
+        memory_text = self._format_items([i for i in ranked_context if i.source == 'memory'], "RELEVANT MEMORIES")
+        knowledge_text = self._format_items([i for i in ranked_context if i.source == 'knowledge'], "KNOWLEDGE BASE")
+        
+        # Format history note
+        history_text = f"[Continuing conversation with {len(history_items)} previous turns available.]" if history_items else "[New conversation.]"
 
-        # Step 3: Build the system prompt with injected context
-        system_prompt = self._build_system_prompt(memories, history)
+        # 4. Build system prompt
+        system_prompt = self._settings.system.system_prompt.format(
+            state_snapshot=state_text or "[No active state]",
+            memories=memory_text or "[No relevant memories]",
+            knowledge=knowledge_text or "[No relevant knowledge]",
+            conversation_history=history_text
+        )
 
-        # Step 4: Assemble the final message list
+        # 5. Assemble messages
         messages = [{"role": "system", "content": system_prompt}]
+        
+        # Add history (truncate to budget)
+        hist_budget = self._settings.context.history_budget_tokens
+        current_hist_tokens = 0
+        accepted_history = []
+        # Process history newest first to ensure immediate context is kept
+        for msg in reversed(history_items):
+            est_tokens = max(1, len(msg["content"]) // 4)
+            if current_hist_tokens + est_tokens <= hist_budget:
+                accepted_history.insert(0, msg)
+                current_hist_tokens += est_tokens
+            else:
+                break
+                
+        for msg in accepted_history:
+             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Add conversation history as alternating user/assistant turns
-        for msg in history:
-            messages.append({
-                "role": msg["role"],
-                "content": msg["content"],
-            })
-
-        # Add the current user message
+        # Add current message
         messages.append({"role": "user", "content": user_message})
 
-        logger.info(
-            "Built context — %d messages total (%d history + system + current), "
-            "%d memories injected",
-            len(messages), len(history), len(memories) if isinstance(memories, list) else 0,
-        )
-
+        logger.info("Context built: %d context items injected, %d history turns included", 
+                    len(ranked_context), len(accepted_history))
         return messages
 
-    def _retrieve_and_format_memories(self, query: str) -> str:
-        """
-        Retrieve relevant memories and format them into a readable block.
+    # -----------------------------------------------------------------------
+    # Source Gatherers
+    # -----------------------------------------------------------------------
+
+    def _get_state_snapshot(self) -> list[ContextItem]:
+        """Fetch current state (goals, habits, projects)."""
+        items = []
+        now = datetime.now(timezone.utc).isoformat()
         
-        Args:
-            query: The user's message to search for relevant memories.
-        
-        Returns:
-            Formatted string of relevant memories, or empty string if none found.
-        """
+        # Active Goals
+        goals = self._goals.list_goals(status="active")
+        if goals:
+            goal_lines = [f"- {g['id'][:4]}: {g['title']} ({g['target_type']})" for g in goals]
+            items.append(ContextItem(
+                content="Active Goals:\n" + "\n".join(goal_lines),
+                source="state",
+                source_id="goals_active",
+                timestamp=now,
+                relevance_score=1.0,
+                confidence=1.0,
+                retrieval_reason="Always injected to ground Jarvis in user objectives."
+            ))
+            
+        # Active Projects
+        projects = self._projects.list_projects(status="active")
+        if projects:
+            proj_lines = [f"- {p['id'][:4]}: {p['name']} ({p['progress_percentage']}%)" for p in projects]
+            items.append(ContextItem(
+                content="Active Projects:\n" + "\n".join(proj_lines),
+                source="state",
+                source_id="projects_active",
+                timestamp=now,
+                relevance_score=1.0,
+                confidence=1.0,
+                retrieval_reason="Always injected."
+            ))
+            
+        # Habits (just a count or summary to save tokens)
+        habits = self._habits.list_habits(active_only=True)
+        if habits:
+            items.append(ContextItem(
+                content=f"Tracking {len(habits)} active habits.",
+                source="state",
+                source_id="habits_active",
+                timestamp=now,
+                relevance_score=0.8,
+                confidence=1.0,
+                retrieval_reason="General state awareness."
+            ))
+            
+        return items
+
+    def _get_memories(self, query: str) -> list[ContextItem]:
+        """Fetch memories via semantic search."""
         memories = self._memory.retrieve_relevant_memories(
-            query=query,
-            n_results=self._max_retrieved,
+            query=query, 
+            n_results=self._settings.memory.max_retrieved_memories
         )
+        
+        items = []
+        for mem in memories:
+            items.append(ContextItem(
+                content=mem.get("content", ""),
+                source="memory",
+                source_id=mem.get("id", "unknown"),
+                timestamp=mem.get("created_at", datetime.now(timezone.utc).isoformat()),
+                relevance_score=mem.get("similarity_score", 0.5),
+                confidence=mem.get("importance", 0.5),
+                retrieval_reason=f"Semantic match to query ({mem.get('memory_type', 'fact')})"
+            ))
+        return items
 
-        if not memories:
-            return ""
-
-        # Format memories into a clean, readable block
-        formatted_lines = ["RELEVANT MEMORIES FROM PAST CONVERSATIONS:"]
-        for i, mem in enumerate(memories, 1):
-            mem_type = mem.get("memory_type", "unknown").upper()
-            content = mem.get("content", "")
-            similarity = mem.get("similarity_score", 0)
-
-            # Truncate individual memories if they're too long
-            # Rough estimate: 1 token ≈ 4 characters
-            max_chars = (self._max_context_tokens * 4) // self._max_retrieved
-            if len(content) > max_chars:
-                content = content[:max_chars] + "..."
-
-            formatted_lines.append(
-                f"  [{mem_type}] {content}"
+    def _get_knowledge(self, query: str) -> list[ContextItem]:
+        """Fetch knowledge chunks if store is available."""
+        if not self._knowledge:
+            return []
+            
+        try:
+            chunks = self._knowledge.search(
+                query=query, 
+                n_results=self._settings.knowledge.max_retrieved_chunks
             )
+            items = []
+            for chunk in chunks:
+                items.append(ContextItem(
+                    content=chunk["text"],
+                    source="knowledge",
+                    source_id=chunk["id"],
+                    timestamp=chunk["metadata"].get("ingested_at", datetime.now(timezone.utc).isoformat()),
+                    relevance_score=1.0 - chunk.get("distance", 0.5),  # Convert Chroma distance to similarity score
+                    confidence=1.0,
+                    retrieval_reason=f"From {chunk['metadata'].get('title', 'Document')}"
+                ))
+            return items
+        except Exception as e:
+            logger.error("Failed to retrieve knowledge: %s", str(e))
+            return []
 
-        formatted = "\n".join(formatted_lines)
-
-        logger.debug(
-            "Formatted %d memories into context block (%d chars)",
-            len(memories), len(formatted),
-        )
-
-        return formatted
-
-    def _get_conversation_history(
-        self,
-        conversation_id: str,
-    ) -> list[dict]:
-        """
-        Get recent conversation turns for continuity.
-        
-        Only includes user and assistant messages (not system).
-        Limited to the configured number of turns to stay within
-        token budget.
-        
-        Args:
-            conversation_id: The current conversation UUID.
-        
-        Returns:
-            List of message dicts with 'role' and 'content'.
-        """
+    def _get_history(self, conversation_id: str) -> list[dict]:
+        """Get recent conversation messages directly."""
         messages = self._db.get_conversation_messages(
             conversation_id=conversation_id,
-            limit=self._history_turns * 2,  # Each "turn" is user + assistant
+            limit=self._settings.memory.conversation_history_turns * 2,
         )
-
-        # Filter to only user and assistant messages
-        history = [
+        # Filter to only user and assistant
+        return [
             {"role": msg["role"], "content": msg["content"]}
             for msg in messages
             if msg["role"] in ("user", "assistant")
         ]
 
-        return history
+    # -----------------------------------------------------------------------
+    # Formatting
+    # -----------------------------------------------------------------------
 
-    def _build_system_prompt(
-        self,
-        memories_block: str,
-        history: list[dict],
-    ) -> str:
-        """
-        Construct the system prompt with injected context.
-        
-        The template has two injection points:
-        - {memories} — relevant retrieved memories
-        - {conversation_history} — note about conversation state
-        
-        Args:
-            memories_block: Formatted memories string.
-            history: Conversation history (used for the history note).
-        
-        Returns:
-            The complete system prompt string.
-        """
-        # Build the memories section
-        if memories_block:
-            memories_section = memories_block
-        else:
-            memories_section = "[No relevant memories found for this query]"
-
-        # Build a brief conversation state note
-        if history:
-            history_note = (
-                f"[This is a continuing conversation with {len(history)} previous messages. "
-                f"Maintain continuity with the discussion above.]"
-            )
-        else:
-            history_note = "[This is a new conversation. No prior context available.]"
-
-        # Inject into template
-        system_prompt = self._system_prompt_template.format(
-            memories=memories_section,
-            conversation_history=history_note,
-        )
-
-        return system_prompt
+    def _format_items(self, items: list[ContextItem], header: str) -> str:
+        if not items:
+            return ""
+            
+        lines = [f"{header}:"]
+        for item in items:
+            # Include provenance metadata subtly (REV 4)
+            prov = f"[src:{item.source}|score:{item.combined_score:.2f}|reason:{item.retrieval_reason}]"
+            lines.append(f"{prov} {item.content}")
+            
+        return "\n".join(lines)

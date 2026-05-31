@@ -167,6 +167,11 @@ class MemoryExtractor:
             if len(sentence) < 10:  # Skip very short fragments
                 continue
 
+            lower_sentence = sentence.lower()
+            # Skip greetings or pure conversational fillers
+            if lower_sentence in ("hello", "hi", "hey", "good morning", "good evening", "good night", "how are you"):
+                continue
+
             for memory_type, importance, pattern in _EXTRACTION_PATTERNS:
                 match = pattern.search(sentence)
                 if match:
@@ -267,6 +272,170 @@ class MemoryExtractor:
             logger.error("Failed to generate conversation summary: %s", str(e))
 
         return None
+
+    # -------------------------------------------------------------------
+    # Phase 3: LLM-powered extraction
+    # -------------------------------------------------------------------
+
+    def extract_with_llm(self, conversation_messages: list[dict]) -> list[ExtractedMemory]:
+        """
+        Use the local LLM to extract structured facts and context from the conversation.
+        """
+        if not self._llm:
+            return []
+            
+        # Only process if there's enough content
+        if len(conversation_messages) < 2:
+            return []
+            
+        history = ""
+        for m in conversation_messages[-10:]:
+            history += f"{m['role'].upper()}: {m['content']}\n\n"
+            
+        prompt = f"""Analyze the following conversation and extract new, important facts about the user.
+Ignore trivial chatter. Focus on:
+- Long-term goals and projects
+- New habits or routines
+- Personal preferences
+- Academic or professional insights
+
+Conversation:
+{history}
+
+Extract facts into a strict JSON list format. Each fact must have:
+- "content": A concise standalone statement (e.g. "User is learning Rust")
+- "memory_type": One of [fact, preference, goal, project, habit, routine, academic, insight]
+- "importance": A float from 0.1 to 1.0
+
+Return ONLY the JSON list. If no new facts, return []."""
+
+        try:
+            # Use original model state
+            import json
+            original_model = self._llm._model
+            # Force fast model for extraction
+            from configs.settings import get_settings
+            settings = get_settings()
+            self._llm._model = settings.local_models.fast
+            
+            response = self._llm._client.chat(
+                model=self._llm._model,
+                messages=[{"role": "user", "content": prompt}],
+                format="json"
+            )
+            
+            self._llm._model = original_model
+            
+            try:
+                data = json.loads(response["message"]["content"])
+                memories = []
+                if isinstance(data, list):
+                    for item in data:
+                        if "content" in item and "memory_type" in item:
+                            imp = float(item.get("importance", 0.5))
+                            memories.append(ExtractedMemory(
+                                content=item["content"],
+                                memory_type=item["memory_type"],
+                                importance=imp,
+                                source_text=f"LLM Extraction"
+                            ))
+                return memories
+            except json.JSONDecodeError:
+                logger.error("Failed to parse LLM extraction JSON: %s", response["message"]["content"])
+                return []
+                
+        except Exception as e:
+            logger.warning("LLM extraction failed: %s", e)
+            return []
+
+    # -------------------------------------------------------------------
+    # Phase 3: Decay & Consolidation
+    # -------------------------------------------------------------------
+
+    def apply_decay_rules(self, db) -> dict:
+        """
+        Apply decay rules to memories based on importance and access patterns.
+        Should be called by the background scheduler.
+        """
+        from datetime import datetime, timezone, timedelta
+        from configs.settings import get_settings
+        
+        settings = get_settings()
+        decay_config = settings.memory.decay
+        
+        now = datetime.now(timezone.utc)
+        
+        results = {
+            "decayed_short": 0,
+            "decayed_medium": 0,
+            "total_processed": 0
+        }
+        
+        try:
+            with db._connect() as conn:
+                # Get memories eligible for decay (importance < 0.8)
+                rows = conn.execute(
+                    "SELECT id, importance, last_accessed, created_at, access_count "
+                    "FROM memories WHERE importance < 0.8"
+                ).fetchall()
+                
+                for row in rows:
+                    results["total_processed"] += 1
+                    memory_id = row["id"]
+                    importance = row["importance"]
+                    last_acc_str = row["last_accessed"] or row["created_at"]
+                    access_count = row["access_count"]
+                    
+                    try:
+                        # Try to parse ISO format
+                        # SQLite might store it with 'Z' or '+00:00'
+                        last_acc = datetime.fromisoformat(last_acc_str.replace('Z', '+00:00'))
+                        if last_acc.tzinfo is None:
+                            last_acc = last_acc.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        continue # Skip malformed dates
+                        
+                    days_since = (now - last_acc).days
+                    
+                    # Short decay (Importance 0.1 - 0.4)
+                    if importance < 0.5:
+                        if days_since > decay_config.short_decay_days and access_count < 2:
+                            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+                            results["decayed_short"] += 1
+                            
+                    # Medium decay (Importance 0.5 - 0.7)
+                    elif importance < 0.8:
+                        if days_since > decay_config.medium_decay_days and access_count < 3:
+                            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+                            results["decayed_medium"] += 1
+                            
+            logger.info("Decay rules applied: %d short term, %d medium term decayed", 
+                        results["decayed_short"], results["decayed_medium"])
+            return results
+            
+        except Exception as e:
+            logger.error("Failed to apply decay rules: %s", e)
+            return results
+
+    def consolidate_memories(self, vector_store, db) -> dict:
+        """
+        Finds semantically similar memories and merges them using the LLM.
+        """
+        if not self._llm:
+            return {"status": "skipped", "reason": "No LLM available"}
+            
+        logger.info("Starting memory consolidation")
+        
+        results = {
+            "consolidated": 0,
+            "pairs_found": 0
+        }
+        
+        # Consolidation is an expensive offline task, we'll keep it simple for now
+        # by just returning the structure, real implementation would require O(N^2)
+        # similarity checks or clustering in ChromaDB
+        
+        return results
 
     @staticmethod
     def _split_sentences(text: str) -> list[str]:

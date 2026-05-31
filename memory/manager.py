@@ -102,7 +102,8 @@ class MemoryManager:
                     memory=memory,
                     conversation_id=conversation_id,
                 )
-                stored_memories.append(stored)
+                if stored:
+                    stored_memories.append(stored)
             except Exception as e:
                 logger.error(
                     "Failed to store memory: %s — %s",
@@ -121,13 +122,21 @@ class MemoryManager:
         self,
         memory: ExtractedMemory,
         conversation_id: Optional[str] = None,
-    ) -> dict:
+    ) -> Optional[dict]:
         """
         Store a single memory in both SQLite and ChromaDB.
         
         Ensures consistency: if SQLite write succeeds, the vector
         store write uses the same ID.
         """
+        # Redundancy suppression: Check if similar memory exists
+        recent_similar = self._vector.search_similar(memory.content, n_results=1, min_importance=0.0)
+        if recent_similar:
+            top_match = recent_similar[0]
+            if top_match.get("similarity_score", 0) > 0.85 and top_match.get("memory_type") == memory.memory_type:
+                logger.info("Suppressing redundant memory: %s (matches %s)", memory.content[:30], top_match["id"][:8])
+                return None
+
         # Step 1: Store in SQLite (source of truth for structured data)
         memory_id = self._db.store_memory(
             content=memory.content,

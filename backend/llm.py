@@ -124,7 +124,7 @@ class OllamaClient:
             # List available models to verify connectivity
             models_response = self._client.list()
             available_models = [
-                m.model for m in models_response.models
+                m.model for m in models_response.models  # pylint: disable=no-member
             ] if hasattr(models_response, 'models') else []
 
             model_available = any(
@@ -162,6 +162,7 @@ class OllamaClient:
         self,
         messages: list[dict],
         stream: bool = False,
+        **kwargs
     ) -> LLMResponse:
         """
         Send a chat completion request to the LLM (non-streaming).
@@ -190,9 +191,10 @@ class OllamaClient:
                     options={
                         "temperature": self._temperature,
                     },
+                    **kwargs
                 )
 
-                raw_content = response.message.content or ""
+                raw_content = response.message.content or ""  # pylint: disable=no-member
                 clean_content, thinking = parse_thinking_tokens(raw_content)
 
                 # Extract timing/token info if available

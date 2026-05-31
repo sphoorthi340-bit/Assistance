@@ -1,5 +1,5 @@
 """
-Jarvis V2 — Terminal Interface
+Jarvis V3 — Terminal Interface
 =================================
 Primary entry point for the Jarvis personal cognitive assistant.
 
@@ -45,7 +45,7 @@ from rich import box
 from backend.logger import initialize_logging, get_logger
 from backend.database import DatabaseManager
 from backend.llm import OllamaClient
-from backend.context import ContextBuilder
+from backend.context import UnifiedContextBuilder
 from memory.vector_store import VectorStore
 from memory.extractor import MemoryExtractor
 from memory.manager import MemoryManager
@@ -54,6 +54,22 @@ from state.habit_manager import HabitManager
 from state.project_manager import ProjectManager
 from state.analytics_manager import AnalyticsManager
 from configs.settings import get_settings
+
+# Phase 2.5 Imports
+from backend.action_engine import is_probable_action, IntentExtractor, ActionRouter, ActionExecutor
+from backend.notification_queue import get_notification_queue
+from backend.scheduler import JarvisScheduler
+from backend.session_summary import SessionSummarizer
+from knowledge.ingestion_pipeline import IngestionPipeline
+from knowledge.knowledge_store import KnowledgeStore
+
+# Phase 3 Imports
+from backend.provider_manager import ProviderManager
+from backend.cloud_llm import CloudLLM
+from backend.model_router import ModelRouter
+from backend.explainability_engine import ExplainabilityEngine
+from backend.analytics_engine import AnalyticsEngine
+from backend.proactive_layer import ProactiveLayer
 
 # Initialize logging FIRST — before anything else
 initialize_logging()
@@ -80,7 +96,7 @@ def initialize_system():
     console.print()
     console.print(
         Panel(
-            "[bold cyan]JARVIS[/bold cyan] [dim]v2.0[/dim]\n"
+            "[bold cyan]JARVIS[/bold cyan] [dim]v3.0[/dim]\n"
             "[dim]Personal Cognitive Infrastructure[/dim]",
             border_style="cyan",
             box=box.DOUBLE,
@@ -131,8 +147,15 @@ def initialize_system():
         )
     except Exception as e:
         console.print(f" [red]✗[/red] {e}")
-        logger.critical("Vector store initialization failed: %s", str(e))
-        sys.exit(1)
+        console.print("  [bold yellow]⚠ DEGRADED MODE:[/bold yellow] Vector Store unavailable. Semantic search disabled.")
+        logger.error("Vector store initialization failed: %s", str(e))
+        class MockVectorStore:
+            def get_count(self): return 0
+            def add_memory(self, *args, **kwargs): pass
+            def search_similar(self, *args, **kwargs): return []
+            def delete_memory(self, *args, **kwargs): pass
+            def get_stats(self): return {"status": "degraded"}
+        vector_store = MockVectorStore()
 
     # --- Memory System ---
     console.print("  [dim]→[/dim] Initializing memory system...", end="")
@@ -147,15 +170,18 @@ def initialize_system():
         console.print(" [green]✓[/green]")
     except Exception as e:
         console.print(f" [red]✗[/red] {e}")
-        logger.critical("Memory system initialization failed: %s", str(e))
-        sys.exit(1)
-
-    # --- Context Builder ---
-    context_builder = ContextBuilder(
-        db=db,
-        memory_manager=memory_manager,
-        settings=settings,
-    )
+        console.print("  [bold yellow]⚠ DEGRADED MODE:[/bold yellow] Memory subsystem unavailable.")
+        logger.error("Memory system initialization failed: %s", str(e))
+        class MockMemoryManager:
+            def process_message(self, *args, **kwargs): return []
+            def store_manual_memory(self, *args, **kwargs): return {}
+            def retrieve_relevant_memories(self, *args, **kwargs): return []
+            def summarize_conversation(self, *args, **kwargs): return None
+            def get_all_memories(self, *args, **kwargs): return []
+            def get_memories_by_type(self, *args, **kwargs): return []
+            def delete_memory(self, *args, **kwargs): return False
+            def get_stats(self): return {"database": {}, "vector_store": {}}
+        memory_manager = MockMemoryManager()
 
     # --- Phase 2: State Managers ---
     console.print("  [dim]→[/dim] Initializing state systems...", end="")
@@ -169,6 +195,117 @@ def initialize_system():
         console.print(f" [red]✗[/red] {e}")
         logger.critical("State system initialization failed: %s", str(e))
         sys.exit(1)
+
+    # --- Phase 2.5: Action Engine ---
+    console.print("  [dim]→[/dim] Initializing Action Engine...", end="")
+    try:
+        intent_extractor = IntentExtractor(settings=settings, llm=llm)
+        action_executor = ActionExecutor(db=db)
+        action_router = ActionRouter(executor=action_executor, settings=settings)
+        console.print(" [green]✓[/green]")
+    except Exception as e:
+        console.print(f" [red]✗[/red] {e}")
+        logger.critical("Action Engine initialization failed: %s", str(e))
+        sys.exit(1)
+
+    # --- Phase 2.5: Knowledge Pipeline ---
+    console.print("  [dim]→[/dim] Initializing Knowledge Pipeline...", end="")
+    try:
+        knowledge_store = KnowledgeStore(settings=settings)
+        ingestion_pipeline = IngestionPipeline(db=db, settings=settings)
+        console.print(" [green]✓[/green]")
+    except Exception as e:
+        console.print(f" [red]✗[/red] {e}")
+        logger.critical("Knowledge Pipeline initialization failed: %s", str(e))
+        sys.exit(1)
+
+    # --- Phase 3: Core Infrastructure ---
+    console.print("  [dim]→[/dim] Initializing Phase 3 Engine...", end="")
+    try:
+        from backend.lm_studio import LMStudioClient
+        lm_studio_client = LMStudioClient(settings=settings)
+        
+        provider_manager = ProviderManager(db=db, settings=settings)
+        explainability_engine = ExplainabilityEngine(db=db, settings=settings)
+        cloud_llm = CloudLLM(db=db, provider_manager=provider_manager, vector_store=vector_store, settings=settings)
+        model_router = ModelRouter(
+            provider_manager=provider_manager,
+            cloud_llm=cloud_llm,
+            ollama_client=llm,
+            lm_studio_client=lm_studio_client,
+            db=db,
+            settings=settings
+        )
+        analytics_engine = AnalyticsEngine(db=db, analytics_manager=analytics_manager, settings=settings)
+        proactive_layer = ProactiveLayer(db=db, analytics_manager=analytics_manager, settings=settings)
+        console.print(" [green]✓[/green]")
+    except Exception as e:
+        console.print(f" [red]✗[/red] {e}")
+        logger.critical("Phase 3 initialization failed: %s", str(e))
+        sys.exit(1)
+
+    # --- Startup Model Alias Validation ---
+    console.print("\n  [bold cyan]=== MODEL ALIAS VALIDATION ===[/bold cyan]")
+    _tiers = ["fast", "reasoning", "coding", "math", "classifier"]
+    _local_providers = ["ollama", "lm_studio"]
+    
+    # Pre-fetch health for local providers once
+    _local_health: dict = {}
+    for _prov in _local_providers:
+        _h = provider_manager.check_health(_prov)
+        _local_health[_prov] = _h
+    
+    for _tier in _tiers:
+        console.print(f"\n  [dim]{_tier.upper()}[/dim]")
+        for _prov in _local_providers:
+            _model_name = settings.local_models.get_model_for(_tier, _prov)
+            _prov_health = _local_health.get(_prov)
+            _prov_label = "Ollama" if _prov == "ollama" else "LM Studio"
+            
+            if not _model_name:
+                console.print(f"    {_prov_label}:  [dim](not configured)[/dim]")
+                continue
+            
+            if _prov_health and _prov_health.status == "healthy" and _model_name in _prov_health.available_models:
+                console.print(f"    {_prov_label}:  {_model_name}  [green]✓ FOUND[/green]")
+            elif _prov_health and _prov_health.status != "healthy":
+                console.print(f"    {_prov_label}:  {_model_name}  [dim]─ PROVIDER OFFLINE[/dim]")
+            else:
+                console.print(f"    {_prov_label}:  {_model_name}  [yellow]⚠ NOT FOUND[/yellow]")
+                logger.warning("Alias validation: model '%s' not found on %s for tier '%s'", _model_name, _prov, _tier)
+
+    console.print()
+
+
+    # --- Context Builder (Unified) ---
+    context_builder = UnifiedContextBuilder(
+        db=db,
+        memory_manager=memory_manager,
+        goal_manager=goal_manager,
+        habit_manager=habit_manager,
+        project_manager=project_manager,
+        knowledge_store=knowledge_store,
+        settings=settings,
+    )
+
+    # --- Phase 2.5: Background & Continuity ---
+    console.print("  [dim]→[/dim] Starting background scheduler...", end="")
+    try:
+        scheduler = JarvisScheduler(
+            db=db, 
+            vector_store=vector_store, 
+            memory_extractor=extractor, 
+            analytics_manager=analytics_manager, 
+            settings=settings
+        )
+        scheduler.start()
+        console.print(" [green]✓[/green]")
+    except Exception as e:
+        console.print(f" [red]✗[/red] {e}")
+        logger.warning("Scheduler failed to start: %s", str(e))
+        scheduler = None
+
+    session_summarizer = SessionSummarizer(db=db, llm=llm, memory=memory_manager)
 
     # --- Summary ---
     db_stats = db.get_stats()
@@ -197,6 +334,17 @@ def initialize_system():
         "habit_manager": habit_manager,
         "project_manager": project_manager,
         "analytics_manager": analytics_manager,
+        "intent_extractor": intent_extractor,
+        "action_router": action_router,
+        "action_executor": action_executor,
+        "ingestion_pipeline": ingestion_pipeline,
+        "knowledge_store": knowledge_store,
+        "scheduler": scheduler,
+        "provider_manager": provider_manager,
+        "explainability_engine": explainability_engine,
+        "model_router": model_router,
+        "analytics_engine": analytics_engine,
+        "proactive_layer": proactive_layer,
     }
 
 
@@ -1082,6 +1230,27 @@ def handle_accountability(analytics_manager: AnalyticsManager):
     ))
     console.print()
 
+# ---------------------------------------------------------------------------
+# Phase 3 slash command handlers
+# ---------------------------------------------------------------------------
+
+def handle_why(explainability_engine: ExplainabilityEngine):
+    data = explainability_engine.explain_last_decision()
+    console.print("\n" + explainability_engine.format_for_terminal(data, "/why") + "\n")
+
+def handle_provider_trace(explainability_engine: ExplainabilityEngine):
+    data = explainability_engine.explain_provider_trace()
+    console.print("\n" + explainability_engine.format_for_terminal(data, "/provider_trace") + "\n")
+
+def handle_router(explainability_engine: ExplainabilityEngine):
+    data = explainability_engine.explain_routing()
+    if not data:
+        console.print("\n  [dim]No recent routing decisions found.[/dim]\n")
+        return
+    for item in data:
+        console.print(f"  [dim]- {item['timestamp'][:19]}[/dim] -> {item['selected_provider']}:{item['selected_model']} ({item['reason']})")
+    console.print()
+
 
 # ---------------------------------------------------------------------------
 # Help command
@@ -1137,8 +1306,13 @@ def handle_help():
         ("/task delete <task-id>", "Delete a task"),
         # System
         ("", "[bold]System[/bold]"),
+        ("/ingest <path>", "Ingest a document into the Knowledge Base"),
+        ("/knowledge <list|search|delete>", "Manage the Knowledge Base"),
         ("/stats", "Show system statistics"),
         ("/accountability", "Run the accountability report"),
+        ("/why", "Explain Jarvis's last internal decision"),
+        ("/provider_trace", "Show LLM provider health & usage"),
+        ("/router", "Show history of LLM routing decisions"),
         ("/help", "Show this help message"),
         ("/quit", "Exit Jarvis"),
     ]
@@ -1180,6 +1354,12 @@ def chat_loop(systems: dict):
 
     while True:
         try:
+            # --- Phase 2.5: Display queued notifications ---
+            notifications = get_notification_queue().get_pending()
+            for notification in notifications:
+                console.print(f"\n  [cyan]🔔 {notification.title}[/cyan]")
+                console.print(f"  [dim]{notification.content}[/dim]\n")
+
             # Get user input
             user_input = console.input("[bold cyan]You:[/bold cyan] ").strip()
 
@@ -1197,9 +1377,12 @@ def chat_loop(systems: dict):
                 single_arg_commands = {
                     "/quit", "/new", "/history", "/memories",
                     "/remember", "/forget", "/stats",
-                    "/accountability", "/help",
+                    "/accountability", "/help", "/undo", "/health", "/system_status",
+                    "/context", "/retrieval_debug", "/memory_debug", "/ingest",
+                    "/why", "/provider_trace", "/router"
                 }
 
+                cmd_args = ""
                 if command in single_arg_commands:
                     # Rejoin subcommand + args as the full argument
                     full_args = user_input.split(maxsplit=1)
@@ -1247,6 +1430,143 @@ def chat_loop(systems: dict):
                 elif command == "/help":
                     handle_help()
 
+                elif command == "/why":
+                    handle_why(systems["explainability_engine"])
+                    
+                elif command == "/provider_trace":
+                    handle_provider_trace(systems["explainability_engine"])
+                    
+                elif command == "/router":
+                    handle_router(systems["explainability_engine"])
+
+                # --- Phase 3 new commands ---
+                elif command == "/router_test":
+                    if not args:
+                        console.print("\n  [yellow]Usage: /router_test <query>[/yellow]\n")
+                    else:
+                        decision = systems["model_router"].route(args, [])
+                        console.print("\n  [cyan]Router Dry-Run Results:[/cyan]")
+                        console.print(f"  [dim]Input:[/dim] {args}")
+                        console.print(f"  [dim]Complexity:[/dim] {decision.complexity.capitalize()}")
+                        console.print(f"  [dim]Privacy:[/dim] {decision.privacy.capitalize()}")
+                        console.print(f"  [dim]Selected Provider:[/dim] [green]{decision.selected_provider}[/green]")
+                        console.print(f"  [dim]Selected Model:[/dim] [green]{decision.selected_model}[/green]")
+                        console.print(f"  [dim]Reason:[/dim] {decision.reason}\n")
+                        
+                elif command == "/db_health":
+                    try:
+                        tables = db._connect().execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                        console.print("\n  [cyan]Database Health (Tables):[/cyan]")
+                        for (t,) in tables:
+                            console.print(f"  [dim]- {t}[/dim]")
+                        console.print("  [green]✓ Schema verified.[/green]\n")
+                    except Exception as e:
+                        console.print(f"\n  [red]Database Health check failed: {e}[/red]\n")
+                        
+                elif command == "/knowledge_health":
+                    try:
+                        console.print("\n  [cyan]ChromaDB Knowledge Health:[/cyan]")
+                        colls = systems["knowledge_store"]._client.list_collections()
+                        for c in colls:
+                            console.print(f"  [dim]- Collection '{c.name}'[/dim]")
+                        console.print("  [green]✓ Knowledge Vector Store healthy.[/green]\n")
+                    except Exception as e:
+                        console.print(f"\n  [red]Knowledge Health check failed: {e}[/red]\n")
+                elif command == "/undo":
+                    log = db.get_last_action_log()
+                    if not log or not log.get("undo_intent"):
+                        console.print("\n  [yellow]No recent undoable action found.[/yellow]\n")
+                    else:
+                        console.print(f"\n  [dim]Reversing Action: {log['action_name']}[/dim]")
+                        import json
+                        params = json.loads(log["undo_parameters"]) if log.get("undo_parameters") else {}
+                        res = systems["action_executor"].execute(
+                            intent=log["undo_intent"],
+                            parameters=params,
+                            confidence=1.0,
+                            user_message="[Undo Command]"
+                        )
+                        console.print(f"  [green]✓ {res['message']}[/green]\n")
+
+                elif command in ("/health", "/system_status"):
+                    console.print("\n  [cyan]System Health:[/cyan]")
+                    console.print(f"  [dim]LLM:[/dim] {llm.check_health().get('status')}")
+                    if hasattr(memory_manager, "get_stats"):
+                        console.print(f"  [dim]DB Memory Count:[/dim] {memory_manager.get_stats().get('database', {}).get('total_memories')}")
+                        console.print(f"  [dim]VS Vector Count:[/dim] {memory_manager.get_stats().get('vector_store', {}).get('total_vectors')}")
+                    else:
+                        console.print("  [dim]Memory:[/dim] Degraded")
+                    console.print()
+
+                elif command == "/context":
+                    ctx = getattr(context_builder, "last_assembled_context", [])
+                    console.print("\n  [cyan]Last Assembled Context Items:[/cyan]")
+                    for item in ctx:
+                        console.print(f"  [dim]- \[{item.source}] {item.content[:80]}...[/dim]")
+                    if not ctx:
+                        console.print("  [dim]No context assembled yet.[/dim]")
+                    console.print()
+
+                elif command == "/retrieval_debug":
+                    if not args:
+                        console.print("\n  [yellow]Usage: /retrieval_debug <query>[/yellow]\n")
+                    else:
+                        if hasattr(memory_manager, "retrieve_relevant_memories"):
+                            results = memory_manager.retrieve_relevant_memories(args)
+                            console.print(f"\n  [cyan]Retrieval Results for '{args}':[/cyan]")
+                            for mem in results:
+                                console.print(f"  [dim]- {mem.get('similarity_score', 0):.2f}: {mem.get('content')}[/dim]")
+                            console.print()
+                        else:
+                            console.print("  [yellow]Memory subsystem degraded.[/yellow]")
+
+                elif command == "/memory_debug":
+                    data = systems["explainability_engine"].explain_memory_trace(args if args else None)
+                    console.print("\n" + systems["explainability_engine"].format_for_terminal(data, "/memory_debug") + "\n")
+
+                # --- Phase 2.5 Knowledge commands ---
+                elif command == "/ingest":
+                    if not cmd_args:
+                        console.print("\n  [yellow]Usage: /ingest <path-to-pdf-or-md>[/yellow]\n")
+                    else:
+                        console.print(f"  [dim]Ingesting {cmd_args}...[/dim]")
+                        try:
+                            doc_id = systems["ingestion_pipeline"].ingest_document(cmd_args)
+                            console.print(f"  [green]✓ Ingested document {doc_id[:8]}[/green]\n")
+                        except Exception as e:
+                            console.print(f"  [red]Failed to ingest: {e}[/red]\n")
+
+                elif command == "/knowledge":
+                    if not subcommand:
+                        console.print("\n  [yellow]Usage: /knowledge <list|search|delete>[/yellow]\n")
+                    elif subcommand == "list":
+                        docs = db.list_documents()
+                        if not docs:
+                            console.print("\n  [dim]No documents in knowledge base.[/dim]\n")
+                        else:
+                            console.print()
+                            for d in docs:
+                                console.print(f"  [cyan]{d['id'][:8]}[/cyan] | {d['title']} ({d['chunk_count']} chunks)")
+                            console.print()
+                    elif subcommand == "search":
+                        if not args:
+                            console.print("\n  [yellow]Usage: /knowledge search <query>[/yellow]\n")
+                        else:
+                            chunks = systems["knowledge_store"].search(args, n_results=3)
+                            for i, c in enumerate(chunks, 1):
+                                console.print(f"\n  [cyan]Result {i} (score: {c.similarity_score:.2f})[/cyan]")
+                                console.print(f"  [dim]{c.content[:200]}...[/dim]")
+                            console.print()
+                    elif subcommand == "delete":
+                        if not args:
+                            console.print("\n  [yellow]Usage: /knowledge delete <id>[/yellow]\n")
+                        else:
+                            success = systems["ingestion_pipeline"].delete_document(args.strip())
+                            if success:
+                                console.print("  [green]✓ Document deleted[/green]\n")
+                            else:
+                                console.print("  [red]Document not found[/red]\n")
+
                 # --- Phase 2 compound commands ---
                 elif command == "/goal":
                     if not subcommand:
@@ -1287,101 +1607,104 @@ def chat_loop(systems: dict):
                     )
                 continue
 
+            # --- Phase 2.5: Action Engine Pre-Routing ---
+            action_executed = False
+            if is_probable_action(user_input):
+                console.print("  [dim]Analyzing intent...[/dim]")
+                intent_data = systems["intent_extractor"].extract_intent(user_input)
+                
+                if intent_data:
+                    status, result = systems["action_router"].route(intent_data, user_input)
+                    
+                    if status == "pending_confirmation":
+                        console.print(f"\n  [bold red]Action Required:[/bold red] Execute '{intent_data['intent']}'?")
+                        console.print(f"  [dim]Parameters: {intent_data['parameters']}[/dim]")
+                        confirm = console.input("  [bold]Confirm? [y/N]: [/bold]").strip().lower()
+                        if confirm == 'y':
+                            exec_result = systems["action_executor"].execute(
+                                intent=intent_data["intent"],
+                                parameters=intent_data["parameters"],
+                                confidence=intent_data["confidence"],
+                                user_message=user_input
+                            )
+                            console.print(f"  [green]✓ {exec_result['message']}[/green]\n")
+                            action_executed = True
+                        else:
+                            console.print("  [yellow]Action cancelled.[/yellow]\n")
+                            
+                    elif status == "pending_preview":
+                        console.print(f"\n  [bold yellow]Preview Action:[/bold yellow] {intent_data['intent']}")
+                        console.print(f"  [dim]Parameters: {intent_data['parameters']}[/dim]")
+                        confirm = console.input("  [bold]Proceed? [Y/n]: [/bold]").strip().lower()
+                        if confirm != 'n':
+                            exec_result = systems["action_executor"].execute(
+                                intent=intent_data["intent"],
+                                parameters=intent_data["parameters"],
+                                confidence=intent_data["confidence"],
+                                user_message=user_input
+                            )
+                            console.print(f"  [green]✓ {exec_result['message']}[/green]\n")
+                            action_executed = True
+                        else:
+                            console.print("  [yellow]Action cancelled.[/yellow]\n")
+                            
+                    elif status == "executed":
+                        console.print(f"  [green]✓ Action executed: {result['message']}[/green]\n")
+                        action_executed = True
+                        
+                    elif status == "pending_clarification":
+                        console.print(f"\n  [bold yellow]Ambiguous Action:[/bold yellow] Found intent '{intent_data['intent']}' but confidence is low ({intent_data['confidence']:.2f}).")
+                        console.print(f"  [dim]Jarvis: {result}[/dim]\n")
+                        
+                    elif status == "blocked_by_safe_mode":
+                        console.print(f"\n  [bold red]Safe Mode Block:[/bold red] {result}\n")
+                        
+                    elif status == "error":
+                        console.print(f"  [red]Action failed: {result}[/red]\n")
+            
+            # Allow LLM to respond but append action state invisibly to user message
+            internal_user_msg = user_input
+            if action_executed:
+                internal_user_msg += "\n[System: Action was executed successfully based on the user's intent.]"
+
             # --- Normal chat flow ---
 
             # Step 1: Store user message
             db.add_message(
                 conversation_id=conversation_id,
                 role="user",
-                content=user_input,
+                content=internal_user_msg,
             )
 
             # Step 2: Build context (retrieves memories + history)
             messages = context_builder.build_messages(
-                user_message=user_input,
+                user_message=internal_user_msg,
                 conversation_id=conversation_id,
             )
 
-            # Step 3: Get LLM response (streaming)
+            # Step 3: Get LLM response (routed)
             console.print()
-            console.print("[bold green]Jarvis:[/bold green] ", end="")
+            console.print("  [dim]Jarvis is thinking...[/dim]", end="\r")
 
             try:
-                full_response_parts = []
-                thinking_content = ""
-
-                stream = llm._client.chat(
-                    model=llm._model,
-                    messages=messages,
-                    stream=True,
-                    options={"temperature": llm._temperature},
+                # Use ModelRouter for execution
+                model_router = systems["model_router"]
+                response = model_router.complete(
+                    message=internal_user_msg,
+                    conversation_history=messages,
+                    system_prompt=None,  # ContextBuilder already handles this
+                    conversation_id=conversation_id
                 )
 
-                # --- Streaming with think-token stripping ---
-                raw_buffer = ""
-                in_thinking = False
-                thinking_buffer = []
-
-                for chunk in stream:
-                    token = chunk.message.content or ""
-                    raw_buffer += token
-
-                    if not llm._strip_thinking:
-                        console.print(token, end="")
-                        full_response_parts.append(token)
-                        continue
-
-                    # Process the buffer for think tags
-                    while True:
-                        if not in_thinking:
-                            think_start = raw_buffer.find("<think>")
-                            if think_start == -1:
-                                # No think tag — check for partial tag at end
-                                # Output everything except a potential partial tag
-                                safe_end = len(raw_buffer)
-                                for i in range(1, min(8, len(raw_buffer) + 1)):
-                                    if raw_buffer.endswith("<think>"[:i]):
-                                        safe_end = len(raw_buffer) - i
-                                        break
-                                if safe_end > 0:
-                                    output = raw_buffer[:safe_end]
-                                    console.print(output, end="")
-                                    full_response_parts.append(output)
-                                    raw_buffer = raw_buffer[safe_end:]
-                                break
-                            else:
-                                # Output text before <think>
-                                if think_start > 0:
-                                    output = raw_buffer[:think_start]
-                                    console.print(output, end="")
-                                    full_response_parts.append(output)
-                                raw_buffer = raw_buffer[think_start + 7:]
-                                in_thinking = True
-                        else:
-                            think_end = raw_buffer.find("</think>")
-                            if think_end == -1:
-                                # Still inside thinking — accumulate
-                                thinking_buffer.append(raw_buffer)
-                                raw_buffer = ""
-                                break
-                            else:
-                                # End of thinking block
-                                thinking_buffer.append(raw_buffer[:think_end])
-                                raw_buffer = raw_buffer[think_end + 8:]
-                                in_thinking = False
-
-                # Flush remaining buffer
-                if raw_buffer and not in_thinking:
-                    console.print(raw_buffer, end="")
-                    full_response_parts.append(raw_buffer)
-
-                thinking_content = "".join(thinking_buffer).strip()
-
-                console.print()  # Newline after response
+                # Clear "thinking" line
+                console.print(" " * 50, end="\r")
+                
+                # Print response
+                console.print(f"[bold green]Jarvis:[/bold green] {response.content}")
                 console.print()
 
-                # Build clean response
-                clean_response = "".join(full_response_parts).strip()
+                clean_response = response.content
+                thinking_content = response.thinking
 
             except Exception as e:
                 console.print(f"\n  [red]Error: {str(e)}[/red]\n")

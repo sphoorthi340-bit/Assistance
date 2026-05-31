@@ -490,6 +490,31 @@ class ProjectManager:
 
         return dict(task_row) if task_row else None
 
+    def delete_task(self, task_id: str) -> bool:
+        """
+        Permanently delete a task.
+
+        Args:
+            task_id: Full UUID or unique prefix.
+
+        Returns:
+            True if the task was deleted.
+        """
+        resolved = self._resolve_task_id(task_id)
+        if not resolved:
+            return False
+
+        with self._db._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM project_tasks WHERE id = ?",
+                (resolved,),
+            )
+
+        deleted = cursor.rowcount > 0
+        if deleted:
+            logger.info("Deleted task: %s", resolved[:8])
+        return deleted
+
     # -------------------------------------------------------------------
     # Project summary
     # -------------------------------------------------------------------

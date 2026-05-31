@@ -1,75 +1,213 @@
-# Jarvis V1 — Configuration File
+# Jarvis V3.0 — Configuration File
 # =================================
 # This is the primary configuration source.
 # Environment variables (prefixed with JARVIS_) override these values.
 # See .env.example for available overrides.
 
+# --- Operating Mode ---
+mode:
+  # Development mode: cloud-preferred routing for quality
+  # Production mode: local-preferred routing for privacy/cost
+  development_mode: true
+  # Offline mode: local models only, no cloud calls
+  offline_mode: false
+
+# --- LLM (legacy default model — used when router is bypassed) ---
 llm:
-  # Model identifier as registered in Ollama
-  model: "deepseek-r1:7b"
-  # Ollama server URL (default local installation)
+  model: "qwen2.5:7b"
   ollama_base_url: "http://localhost:11434"
-  # Strip <think>...</think> reasoning tokens from displayed output
-  # They are still stored internally for debugging
   strip_thinking_tokens: true
-  # Request timeout in seconds
   request_timeout: 120
-  # Temperature for generation (lower = more focused)
   temperature: 0.7
-  # Number of retries on failure
   max_retries: 3
 
+# --- Local Model Tier Aliases (per-provider) ---
+# Cloud providers use their own default_model from the providers section.
+local_models:
+  fast:
+    ollama: "llama3.2:1b"
+    lm_studio: "llama-3.2-3b-instruct"
+  reasoning:
+    ollama: "qwen2.5:7b"
+    lm_studio: "qwen2.5-7b-instruct"
+  coding:
+    ollama: "qwen2.5:7b"
+    lm_studio: "qwen2.5-7b-instruct"
+  math:
+    ollama: "qwen2.5:7b"
+    lm_studio: "qwen2.5-7b-instruct"
+  classifier:
+    ollama: "llama3.2:1b"
+    lm_studio: "llama-3.2-3b-instruct"
+
+# --- Provider Configuration ---
+providers:
+  ollama:
+    enabled: true
+    base_url: "http://localhost:11434"
+    timeout: 120
+    priority_dev: 5
+    priority_prod: 2
+  lm_studio:
+    enabled: true
+    base_url: "http://localhost:1234/v1"
+    timeout: 120
+    priority_dev: 4
+    priority_prod: 1
+  openai:
+    enabled: true
+    model: "gpt-4o-mini"
+    timeout: 60
+    priority_dev: 2
+    priority_prod: 4
+    daily_budget_calls: 20
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.0006
+  gemini:
+    enabled: true
+    model: "gemini-2.0-flash"
+    timeout: 60
+    priority_dev: 1
+    priority_prod: 3
+    daily_budget_calls: 50
+    cost_per_1k_input: 0.0
+    cost_per_1k_output: 0.0
+  anthropic:
+    enabled: true
+    model: "claude-3-5-haiku-20241022"
+    timeout: 60
+    priority_dev: 3
+    priority_prod: 5
+    daily_budget_calls: 15
+    cost_per_1k_input: 0.0008
+    cost_per_1k_output: 0.004
+
+# --- Router Configuration ---
+router:
+  keyword_classification: true
+  fallback_to_classifier: true
+  context_limit_local: 4096
+  confidence_threshold: 0.6
+
+# --- Cloud Usage Policy ---
+cloud:
+  daily_budget_calls: 20
+  compress_before_send: true
+  cache_enabled: true
+  cache_similarity_threshold: 0.92
+
 database:
-  # Path to SQLite database file (relative to project root)
   path: "data/jarvis.db"
-  # Enable WAL mode for concurrent reads
   wal_mode: true
 
 memory:
-  # Embedding model for semantic search (sentence-transformers)
   embedding_model: "all-MiniLM-L6-v2"
-  # Path to ChromaDB persistent storage
   chromadb_path: "vector_db"
-  # ChromaDB collection name
   collection_name: "jarvis_memories"
-  # Maximum number of memories retrieved per query
   max_retrieved_memories: 3
-  # Maximum token budget for injected context
   max_context_tokens: 500
-  # Number of recent conversation turns to include
   conversation_history_turns: 10
-  # Minimum similarity score for memory retrieval (0.0–1.0)
   similarity_threshold: 0.3
-  # Memory importance threshold — memories below this are deprioritized
   importance_threshold: 0.4
+  # Phase 3: Decay rules
+  decay:
+    permanent_threshold: 8
+    medium_decay_days: 90
+    short_decay_days: 30
+    consolidation_similarity: 0.85
+    consolidation_day: "sunday"
+
+# --- Phase 2.5: Knowledge Pipeline ---
+knowledge:
+  collection_name: "jarvis_knowledge"
+  documents_dir: "documents"
+  chunk_size: 512
+  chunk_overlap: 64
+  min_chunk_size: 100
+  max_retrieved_chunks: 5
+  supported_formats:
+    - ".pdf"
+    - ".md"
+    - ".txt"
+    - ".markdown"
+  # Phase 3: Multi-collection
+  collections:
+    personal_memory: "jarvis_memories"
+    academic_knowledge: "jarvis_academic"
+    project_docs: "jarvis_projects"
+    reference_material: "jarvis_reference"
+
+# --- Phase 2.5: Action Engine ---
+action_engine:
+  enabled: true
+  auto_execute_threshold: 0.8
+  low_confidence_threshold: 0.4
+  confirm_risk_levels:
+    - "high"
+  preview_risk_levels:
+    - "medium"
+  max_actions_per_message: 3
+
+# --- Background Scheduler ---
+scheduler:
+  enabled: true
+  morning_summary_time: "08:00"
+  nightly_reflection_time: "22:00"
+  stale_project_days: 7
+  memory_cleanup_interval: 24
+  max_medium_priority_per_day: 2
+  max_low_priority_per_day: 1
+
+# --- Phase 3: Proactive Layer ---
+proactive:
+  morning_briefing_time: "07:30"
+  evening_nudge_time: "20:00"
+  stale_goal_days: 5
+  exam_alert_days: 7
+  show_inbox_on_startup: true
+
+# --- Unified Context ---
+context:
+  total_budget_tokens: 500
+  state_budget_tokens: 175
+  memory_budget_tokens: 300
+  knowledge_budget_tokens: 350
+  history_budget_tokens: 250
 
 logging:
-  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
   level: "INFO"
-  # Directory for log files (relative to project root)
   log_dir: "logs"
-  # Maximum log file size in bytes before rotation (5 MB)
   max_file_size: 5242880
-  # Number of backup log files to keep
   backup_count: 5
-  # Log format string
   format: "%(asctime)s | %(name)-20s | %(levelname)-8s | %(message)s"
 
 system:
-  # System prompt template — {context} and {memories} are injected at runtime
+  safe_mode: true
+  debug_mode: true
   system_prompt: |
     You are Jarvis, a persistent personal cognitive assistant.
     You help the user with projects, goals, academics, routines, and long-term planning.
     You remember past conversations and important facts about the user.
+    You have access to the user's personal knowledge base.
     You prioritize continuity, precision, and actionable support.
 
-    IMPORTANT RULES:
+    CAPABILITIES:
+    - You can create, update, and track goals, habits, and projects.
+    - You can search the user's uploaded documents and notes.
+    - You can access analytics and accountability data.
+
+    RULES:
     - You are NOT a chatbot. You are cognitive infrastructure.
     - Be concise and direct. Avoid unnecessary pleasantries.
-    - Reference relevant past context when it aids the current conversation.
+    - Reference relevant past context when it aids the conversation.
+    - When you perform actions, briefly confirm what was done.
     - If you don't know something, say so clearly.
     - Prioritize the user's stated goals and projects.
 
+    {state_snapshot}
+
     {memories}
+
+    {knowledge}
 
     {conversation_history}

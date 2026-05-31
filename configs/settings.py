@@ -1,5 +1,5 @@
 """
-Jarvis V1 — Settings Module
+Jarvis V3.0 — Settings Module
 ==============================
 Central configuration management using Pydantic Settings.
 
@@ -37,12 +37,177 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
-# Sub-configuration models
+# Phase 3: Mode settings
+# ---------------------------------------------------------------------------
+
+class ModeSettings(BaseModel):
+    """Operating mode configuration."""
+    development_mode: bool = True
+    offline_mode: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Provider settings
+# ---------------------------------------------------------------------------
+
+class ProviderConfig(BaseModel):
+    """Configuration for a single LLM provider."""
+    enabled: bool = True
+    base_url: str = ""
+    model: str = ""
+    timeout: int = 60
+    priority_dev: int = 5
+    priority_prod: int = 5
+    daily_budget_calls: int = 100
+    cost_per_1k_input: float = 0.0
+    cost_per_1k_output: float = 0.0
+
+
+class ProvidersSettings(BaseModel):
+    """Configuration for all LLM providers."""
+    ollama: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
+        base_url="http://localhost:11434", timeout=120,
+        priority_dev=4, priority_prod=1
+    ))
+    lm_studio: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
+        enabled=False, base_url="http://localhost:1234/v1", timeout=120,
+        priority_dev=4, priority_prod=1
+    ))
+    openai: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
+        model="gpt-4o-mini", timeout=60,
+        priority_dev=2, priority_prod=3, daily_budget_calls=20,
+        cost_per_1k_input=0.00015, cost_per_1k_output=0.0006
+    ))
+    gemini: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
+        model="gemini-2.0-flash", timeout=60,
+        priority_dev=1, priority_prod=2, daily_budget_calls=50,
+        cost_per_1k_input=0.0, cost_per_1k_output=0.0
+    ))
+    anthropic: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
+        model="claude-3-5-haiku-20241022", timeout=60,
+        priority_dev=3, priority_prod=4, daily_budget_calls=15,
+        cost_per_1k_input=0.0008, cost_per_1k_output=0.004
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Local model settings
+# ---------------------------------------------------------------------------
+
+class ModelAliasConfig(BaseModel):
+    """Provider-specific model name aliases for a single routing tier."""
+    ollama: str = ""
+    lm_studio: str = ""
+
+    def for_provider(self, provider: str) -> str:
+        """Return the provider-specific model name, or empty string if not configured."""
+        return getattr(self, provider, "") or ""
+
+
+class ModelTierSettings(BaseModel):
+    """Per-tier provider-specific model alias mapping."""
+    fast: ModelAliasConfig = Field(default_factory=lambda: ModelAliasConfig(
+        ollama="llama3.2:1b",
+        lm_studio="llama-3.2-3b-instruct",
+    ))
+    reasoning: ModelAliasConfig = Field(default_factory=lambda: ModelAliasConfig(
+        ollama="qwen2.5:7b",
+        lm_studio="qwen2.5-7b-instruct",
+    ))
+    coding: ModelAliasConfig = Field(default_factory=lambda: ModelAliasConfig(
+        ollama="qwen2.5:7b",
+        lm_studio="qwen2.5-7b-instruct",
+    ))
+    math: ModelAliasConfig = Field(default_factory=lambda: ModelAliasConfig(
+        ollama="qwen2.5:7b",
+        lm_studio="qwen2.5-7b-instruct",
+    ))
+    classifier: ModelAliasConfig = Field(default_factory=lambda: ModelAliasConfig(
+        ollama="llama3.2:1b",
+        lm_studio="llama-3.2-3b-instruct",
+    ))
+
+    def get_model_for(self, tier: str, provider: str) -> str:
+        """Resolve the correct model name for a given tier and provider."""
+        tier_config: ModelAliasConfig = getattr(self, tier, None)
+        if tier_config:
+            return tier_config.for_provider(provider)
+        return ""
+
+
+# Keep backward-compat alias so any remaining code referencing LocalModelSettings doesn't break
+LocalModelSettings = ModelTierSettings
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Router settings
+# ---------------------------------------------------------------------------
+
+class RouterSettings(BaseModel):
+    """Model router configuration."""
+    keyword_classification: bool = True
+    fallback_to_classifier: bool = True
+    context_limit_local: int = 4096
+    confidence_threshold: float = 0.6
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Cloud settings
+# ---------------------------------------------------------------------------
+
+class CloudSettings(BaseModel):
+    """Cloud LLM usage policy."""
+    daily_budget_calls: int = 20
+    compress_before_send: bool = True
+    cache_enabled: bool = True
+    cache_similarity_threshold: float = 0.92
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Proactive layer settings
+# ---------------------------------------------------------------------------
+
+class ProactiveSettings(BaseModel):
+    """Proactive layer configuration."""
+    morning_briefing_time: str = "07:30"
+    evening_nudge_time: str = "20:00"
+    stale_goal_days: int = 5
+    exam_alert_days: int = 7
+    show_inbox_on_startup: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Memory decay settings
+# ---------------------------------------------------------------------------
+
+class MemoryDecaySettings(BaseModel):
+    """Memory decay and consolidation configuration."""
+    permanent_threshold: int = 8
+    medium_decay_days: int = 90
+    short_decay_days: int = 30
+    consolidation_similarity: float = 0.85
+    consolidation_day: str = "sunday"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Knowledge collection settings
+# ---------------------------------------------------------------------------
+
+class KnowledgeCollectionSettings(BaseModel):
+    """Multi-collection knowledge store configuration."""
+    personal_memory: str = "jarvis_memories"
+    academic_knowledge: str = "jarvis_academic"
+    project_docs: str = "jarvis_projects"
+    reference_material: str = "jarvis_reference"
+
+
+# ---------------------------------------------------------------------------
+# Existing sub-configuration models (preserved from V2.5)
 # ---------------------------------------------------------------------------
 
 class LLMSettings(BaseModel):
-    """Configuration for the local LLM (Ollama + DeepSeek-R1)."""
-    model: str = "deepseek-r1:7b"
+    """Configuration for the local LLM (Ollama)."""
+    model: str = "qwen2.5:7b"
     ollama_base_url: str = "http://localhost:11434"
     strip_thinking_tokens: bool = True
     request_timeout: int = 120
@@ -66,6 +231,7 @@ class MemorySettings(BaseModel):
     conversation_history_turns: int = 10
     similarity_threshold: float = 0.3
     importance_threshold: float = 0.4
+    decay: MemoryDecaySettings = Field(default_factory=MemoryDecaySettings)
 
 
 class LoggingSettings(BaseModel):
@@ -79,20 +245,75 @@ class LoggingSettings(BaseModel):
 
 class SystemSettings(BaseModel):
     """System-level configuration (prompts, behavior)."""
+    safe_mode: bool = True
+    debug_mode: bool = False
     system_prompt: str = (
         "You are Jarvis, a persistent personal cognitive assistant.\n"
         "You help the user with projects, goals, academics, routines, and long-term planning.\n"
         "You remember past conversations and important facts about the user.\n"
+        "You have access to the user's personal knowledge base.\n"
         "You prioritize continuity, precision, and actionable support.\n\n"
-        "IMPORTANT RULES:\n"
+        "CAPABILITIES:\n"
+        "- You can create, update, and track goals, habits, and projects.\n"
+        "- You can search the user's uploaded documents and notes.\n"
+        "- You can access analytics and accountability data.\n\n"
+        "RULES:\n"
         "- You are NOT a chatbot. You are cognitive infrastructure.\n"
         "- Be concise and direct. Avoid unnecessary pleasantries.\n"
-        "- Reference relevant past context when it aids the current conversation.\n"
+        "- Reference relevant past context when it aids the conversation.\n"
+        "- When you perform actions, briefly confirm what was done.\n"
         "- If you don't know something, say so clearly.\n"
         "- Prioritize the user's stated goals and projects.\n\n"
+        "{state_snapshot}\n\n"
         "{memories}\n\n"
+        "{knowledge}\n\n"
         "{conversation_history}"
     )
+
+
+class KnowledgeSettings(BaseModel):
+    """Configuration for the knowledge/RAG pipeline."""
+    collection_name: str = "jarvis_knowledge"
+    documents_dir: str = "documents"
+    chunk_size: int = 512
+    chunk_overlap: int = 64
+    min_chunk_size: int = 100
+    max_retrieved_chunks: int = 5
+    supported_formats: list[str] = [".pdf", ".md", ".txt", ".markdown"]
+    collections: KnowledgeCollectionSettings = Field(
+        default_factory=KnowledgeCollectionSettings
+    )
+
+
+class ActionEngineSettings(BaseModel):
+    """Configuration for the action engine."""
+    enabled: bool = True
+    auto_execute_threshold: float = 0.8
+    low_confidence_threshold: float = 0.4
+    confirm_risk_levels: list[str] = ["high"]
+    preview_risk_levels: list[str] = ["medium"]
+    max_actions_per_message: int = 3
+
+
+class SchedulerSettings(BaseModel):
+    """Configuration for the background scheduler."""
+    enabled: bool = True
+    morning_summary_time: str = "08:00"
+    nightly_reflection_time: str = "22:00"
+    stale_project_days: int = 7
+    memory_cleanup_interval: int = 24
+    backup_interval_hours: int = 24
+    max_medium_priority_per_day: int = 2
+    max_low_priority_per_day: int = 1
+
+
+class ContextSettings(BaseModel):
+    """Configuration for unified context assembly."""
+    total_budget_tokens: int = 1000
+    state_budget_tokens: int = 175
+    memory_budget_tokens: int = 300
+    knowledge_budget_tokens: int = 350
+    history_budget_tokens: int = 250
 
 
 # ---------------------------------------------------------------------------
@@ -101,11 +322,24 @@ class SystemSettings(BaseModel):
 
 class JarvisSettings(BaseModel):
     """Root configuration container for all Jarvis subsystems."""
+    # Phase 3 additions
+    mode: ModeSettings = Field(default_factory=ModeSettings)
+    providers: ProvidersSettings = Field(default_factory=ProvidersSettings)
+    local_models: ModelTierSettings = Field(default_factory=ModelTierSettings)
+    router: RouterSettings = Field(default_factory=RouterSettings)
+    cloud: CloudSettings = Field(default_factory=CloudSettings)
+    proactive: ProactiveSettings = Field(default_factory=ProactiveSettings)
+
+    # Existing subsystems (preserved)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     system: SystemSettings = Field(default_factory=SystemSettings)
+    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
+    action_engine: ActionEngineSettings = Field(default_factory=ActionEngineSettings)
+    scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
+    context: ContextSettings = Field(default_factory=ContextSettings)
     project_root: Path = PROJECT_ROOT
 
     def resolve_path(self, relative_path: str) -> Path:
@@ -130,7 +364,7 @@ def _load_yaml_config() -> dict:
 def _load_env_overrides() -> dict:
     """
     Load environment variable overrides.
-    
+
     Convention: JARVIS_<SECTION>_<KEY> maps to settings.<section>.<key>
     Example: JARVIS_LLM_MODEL -> settings.llm.model
     """
@@ -142,6 +376,7 @@ def _load_env_overrides() -> dict:
 
     # Map of env var suffixes to their config paths
     env_mapping = {
+        # Existing mappings
         "LLM_MODEL": ("llm", "model"),
         "OLLAMA_BASE_URL": ("llm", "ollama_base_url"),
         "DB_PATH": ("database", "path"),
@@ -152,6 +387,10 @@ def _load_env_overrides() -> dict:
         "CONVERSATION_HISTORY_TURNS": ("memory", "conversation_history_turns"),
         "LOG_LEVEL": ("logging", "level"),
         "LOG_DIR": ("logging", "log_dir"),
+        # Phase 3 mappings
+        "DEVELOPMENT_MODE": ("mode", "development_mode"),
+        "OFFLINE_MODE": ("mode", "offline_mode"),
+        "CLOUD_DAILY_BUDGET": ("cloud", "daily_budget_calls"),
     }
 
     for env_suffix, (section, key) in env_mapping.items():
@@ -159,14 +398,17 @@ def _load_env_overrides() -> dict:
         if value is not None:
             if section not in overrides:
                 overrides[section] = {}
-            # Attempt numeric conversion for int/float fields
-            try:
-                value = int(value)
-            except ValueError:
+            # Attempt type conversion
+            if value.lower() in ("true", "false"):
+                value = value.lower() == "true"
+            else:
                 try:
-                    value = float(value)
+                    value = int(value)
                 except ValueError:
-                    pass
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass
             overrides[section][key] = value
 
     return overrides
@@ -203,7 +445,7 @@ def load_settings() -> JarvisSettings:
 def get_settings() -> JarvisSettings:
     """
     Get the singleton settings instance (cached after first call).
-    
+
     Use this function throughout the codebase to access configuration.
     Call load_settings() directly if you need a fresh, uncached load.
     """
