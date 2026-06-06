@@ -48,6 +48,9 @@ class LLMResponse:
     model: str = ""
     total_duration_ms: int = 0
     token_count: int = 0
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    total_tokens: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +202,9 @@ class OllamaClient:
 
                 # Extract timing/token info if available
                 total_duration = getattr(response, 'total_duration', 0) or 0
-                eval_count = getattr(response, 'eval_count', 0) or 0
+                prompt_tokens = getattr(response, 'prompt_eval_count', 0) or 0
+                response_tokens = getattr(response, 'eval_count', 0) or 0
+                total_tokens = prompt_tokens + response_tokens
 
                 result = LLMResponse(
                     content=clean_content if self._strip_thinking else raw_content,
@@ -207,7 +212,10 @@ class OllamaClient:
                     raw_content=raw_content,
                     model=self._model,
                     total_duration_ms=total_duration // 1_000_000,  # ns to ms
-                    token_count=eval_count,
+                    token_count=response_tokens,
+                    prompt_tokens=prompt_tokens,
+                    response_tokens=response_tokens,
+                    total_tokens=total_tokens,
                 )
 
                 logger.info(
@@ -259,6 +267,9 @@ class OllamaClient:
         raw_parts: list[str] = []
         in_thinking = False
         thinking_parts: list[str] = []
+        prompt_tokens = 0
+        response_tokens = 0
+        total_duration = 0
 
         try:
             stream = self._client.chat(
@@ -273,6 +284,11 @@ class OllamaClient:
             for chunk in stream:
                 token = chunk.message.content or ""
                 raw_parts.append(token)
+                
+                if getattr(chunk, "done", False):
+                    prompt_tokens = getattr(chunk, "prompt_eval_count", 0) or 0
+                    response_tokens = getattr(chunk, "eval_count", 0) or 0
+                    total_duration = getattr(chunk, "total_duration", 0) or 0
 
                 if not self._strip_thinking:
                     yield token
@@ -327,6 +343,11 @@ class OllamaClient:
             thinking=thinking,
             raw_content=raw_content,
             model=self._model,
+            total_duration_ms=total_duration // 1_000_000,
+            token_count=response_tokens,
+            prompt_tokens=prompt_tokens,
+            response_tokens=response_tokens,
+            total_tokens=prompt_tokens + response_tokens,
         )
 
     def generate_summary(self, text: str, max_words: int = 50) -> str:

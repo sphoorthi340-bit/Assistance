@@ -197,6 +197,36 @@ def main():
                     status_tag = "NOT FOUND"
                 print(f"    {label}: {model_name}  [{status_tag}]")
 
+    # --- 11. Command Validation ---
+    print("\n----------------------------------------")
+    print("=== COMMAND VALIDATION ===")
+    print("----------------------------------------")
+    
+    # Check if all new Phase 3 commands exist in main.py
+    import os
+    main_path = os.path.join(os.path.dirname(__file__), "main.py")
+    try:
+        with open(main_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        commands_to_check = [
+            "/route", "/perf", "/perf_export", "/model_stats", 
+            "/fallbacks", "/knowledge_debug", "/trace", 
+            "/last_context", "/decision_history", "/why", "/memory_debug"
+        ]
+        
+        all_found = True
+        for cmd in commands_to_check:
+            if f'command == "{cmd}"' in content or f'"{cmd}"' in content:
+                print(f"  [FOUND] {cmd}")
+            else:
+                print(f"  [MISSING] {cmd}")
+                all_found = False
+                
+        print("\nCommand Suite:", "ALL PASS" if all_found else "FAILURES DETECTED")
+    except Exception as e:
+        print(f"  [ERROR] Could not read main.py: {e}")
+
     print("\n========================================")
     print("Validation Suite Complete.")
     print("========================================\n")

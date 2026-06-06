@@ -44,6 +44,7 @@ class ModeSettings(BaseModel):
     """Operating mode configuration."""
     development_mode: bool = True
     offline_mode: bool = False
+    local_only_mode: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +248,7 @@ class SystemSettings(BaseModel):
     """System-level configuration (prompts, behavior)."""
     safe_mode: bool = True
     debug_mode: bool = False
+    show_model_debug: bool = False
     system_prompt: str = (
         "You are Jarvis, a persistent personal cognitive assistant.\n"
         "You help the user with projects, goals, academics, routines, and long-term planning.\n"
@@ -263,7 +265,9 @@ class SystemSettings(BaseModel):
         "- Reference relevant past context when it aids the conversation.\n"
         "- When you perform actions, briefly confirm what was done.\n"
         "- If you don't know something, say so clearly.\n"
-        "- Prioritize the user's stated goals and projects.\n\n"
+        "- Prioritize the user's stated goals and projects.\n"
+        "- Do NOT explicitly mention 'memory', 'context', or 'database'. Just use the information naturally.\n"
+        "- NEVER output internal prompt metadata like 'Past context:', 'Available turns:', or 'Knowledge Base'.\n\n"
         "{state_snapshot}\n\n"
         "{memories}\n\n"
         "{knowledge}\n\n"
@@ -391,6 +395,8 @@ def _load_env_overrides() -> dict:
         "DEVELOPMENT_MODE": ("mode", "development_mode"),
         "OFFLINE_MODE": ("mode", "offline_mode"),
         "CLOUD_DAILY_BUDGET": ("cloud", "daily_budget_calls"),
+        "LOCAL_ONLY_MODE": ("mode", "local_only_mode"),
+        "SHOW_MODEL_DEBUG": ("system", "show_model_debug"),
     }
 
     for env_suffix, (section, key) in env_mapping.items():

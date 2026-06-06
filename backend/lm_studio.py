@@ -100,7 +100,11 @@ class LMStudioClient:
                 final_content = raw_content
 
             duration_ms = int((time.time() - start_time) * 1000)
-            token_count = response.usage.total_tokens if response.usage else len(raw_content) // 4
+            
+            prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+            response_tokens = response.usage.completion_tokens if response.usage else len(raw_content) // 4
+            total_tokens = response.usage.total_tokens if response.usage else prompt_tokens + response_tokens
+            token_count = response_tokens
 
             return LLMResponse(
                 content=final_content,
@@ -108,7 +112,10 @@ class LMStudioClient:
                 raw_content=raw_content,
                 model=self._model,
                 total_duration_ms=duration_ms,
-                token_count=token_count
+                token_count=token_count,
+                prompt_tokens=prompt_tokens,
+                response_tokens=response_tokens,
+                total_tokens=total_tokens
             )
 
         except Exception as e:
@@ -176,13 +183,17 @@ class LMStudioClient:
             duration_ms = int((time.time() - start_time) * 1000)
             clean, thinking = parse_thinking_tokens(full_content)
             
+            response_tokens = len(full_content) // 4
             final_resp = LLMResponse(
                 content=clean if self._strip_thinking else full_content,
                 thinking=thinking,
                 raw_content=full_content,
                 model=self._model,
                 total_duration_ms=duration_ms,
-                token_count=len(full_content) // 4
+                token_count=response_tokens,
+                prompt_tokens=0,
+                response_tokens=response_tokens,
+                total_tokens=response_tokens
             )
             
             yield "", "", final_resp

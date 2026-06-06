@@ -205,6 +205,12 @@ class UnifiedContextBuilder:
 
     def _get_memories(self, query: str) -> list[ContextItem]:
         """Fetch memories via semantic search."""
+        q_lower = query.strip().lower()
+        greetings = {"hello", "hi", "hey", "sup", "what's up", "how are you", "good morning", "good afternoon", "good evening", "morning"}
+        if len(q_lower) < 25 and any(q_lower.startswith(g) for g in greetings) or q_lower in greetings:
+            # Low complexity / greeting: prefer zero memory injection
+            return []
+
         memories = self._memory.retrieve_relevant_memories(
             query=query, 
             n_results=self._settings.memory.max_retrieved_memories

@@ -11,6 +11,9 @@ mode:
   development_mode: true
   # Offline mode: local models only, no cloud calls
   offline_mode: false
+  # Local-only mode: cloud providers disabled at runtime (preserves cloud code)
+  # Used during 7-day local testing phase
+  local_only_mode: true
 
 # --- LLM (legacy default model — used when router is bypassed) ---
 llm:
@@ -46,13 +49,13 @@ providers:
     enabled: true
     base_url: "http://localhost:11434"
     timeout: 120
-    priority_dev: 5
+    priority_dev: 2
     priority_prod: 2
   lm_studio:
     enabled: true
     base_url: "http://localhost:1234/v1"
     timeout: 120
-    priority_dev: 4
+    priority_dev: 1
     priority_prod: 1
   openai:
     enabled: true
@@ -184,6 +187,7 @@ logging:
 system:
   safe_mode: true
   debug_mode: true
+  show_model_debug: true
   system_prompt: |
     You are Jarvis, a persistent personal cognitive assistant.
     You help the user with projects, goals, academics, routines, and long-term planning.

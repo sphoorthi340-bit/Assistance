@@ -70,6 +70,7 @@ from backend.model_router import ModelRouter
 from backend.explainability_engine import ExplainabilityEngine
 from backend.analytics_engine import AnalyticsEngine
 from backend.proactive_layer import ProactiveLayer
+from backend.observability import get_session_metrics
 
 # Initialize logging FIRST — before anything else
 initialize_logging()
@@ -94,15 +95,30 @@ def initialize_system():
         SystemExit if critical components fail to initialize.
     """
     console.print()
-    console.print(
-        Panel(
-            "[bold cyan]JARVIS[/bold cyan] [dim]v3.0[/dim]\n"
-            "[dim]Personal Cognitive Infrastructure[/dim]",
-            border_style="cyan",
-            box=box.DOUBLE,
-            padding=(1, 4),
+    # Determine banner based on mode
+    settings = get_settings()
+    local_only = settings.mode.local_only_mode
+    
+    if local_only:
+        console.print(
+            Panel(
+                "[bold cyan]JARVIS[/bold cyan] [dim]Phase 3 Development Mode[/dim]\n"
+                "[dim]Local-Only Testing — Cloud Providers Disabled[/dim]",
+                border_style="magenta",
+                box=box.DOUBLE,
+                padding=(1, 4),
+            )
         )
-    )
+    else:
+        console.print(
+            Panel(
+                "[bold cyan]JARVIS[/bold cyan] [dim]v3.0[/dim]\n"
+                "[dim]Personal Cognitive Infrastructure[/dim]",
+                border_style="cyan",
+                box=box.DOUBLE,
+                padding=(1, 4),
+            )
+        )
     console.print()
 
     settings = get_settings()
@@ -1379,7 +1395,9 @@ def chat_loop(systems: dict):
                     "/remember", "/forget", "/stats",
                     "/accountability", "/help", "/undo", "/health", "/system_status",
                     "/context", "/retrieval_debug", "/memory_debug", "/ingest",
-                    "/why", "/provider_trace", "/router"
+                    "/why", "/provider_trace", "/router",
+                    "/route", "/perf", "/perf_export", "/model_stats", "/fallbacks",
+                    "/knowledge_debug", "/trace", "/last_context", "/decision_history"
                 }
 
                 cmd_args = ""
@@ -1439,9 +1457,119 @@ def chat_loop(systems: dict):
                 elif command == "/router":
                     handle_router(systems["explainability_engine"])
 
-                # --- Phase 3 new commands ---
+                # --- Phase 3 Observability Commands ---
+                elif command == "/route":
+                    data = systems["explainability_engine"].explain_route_diagnostics()
+                    console.print("\n" + systems["explainability_engine"].format_for_terminal(data) + "\n")
+                    
+                elif command == "/trace":
+                    data = systems["explainability_engine"].explain_unified_trace()
+                    console.print("\n" + systems["explainability_engine"].format_for_terminal(data) + "\n")
+                    
+                elif command == "/last_context":
+                    data = systems["explainability_engine"].explain_last_context()
+                    console.print("\n" + systems["explainability_engine"].format_for_terminal(data) + "\n")
+                    
+                elif command == "/decision_history":
+                    history = systems["explainability_engine"].get_routing_history(limit=10)
+                    if not history:
+                        console.print("\n  [dim]No recent routing decisions found.[/dim]\n")
+                    else:
+                        console.print("\n  [bold cyan]Recent Routing Decisions[/bold cyan]")
+                        for i, h in enumerate(history, 1):
+                            console.print(f"\n  [cyan]{i}.[/cyan]")
+                            console.print(f"  [dim]Input:[/dim] {h['input_summary']}")
+                            console.print(f"  [dim]Route:[/dim] {h['route']}")
+                            console.print(f"  [dim]Provider:[/dim] {h['provider']}")
+                            console.print(f"  [dim]Model:[/dim] {h['model']}")
+                        console.print()
+
+                elif command == "/knowledge_debug":
+                    data = systems["explainability_engine"].explain_knowledge_trace()
+                    console.print("\n" + systems["explainability_engine"].format_for_terminal(data) + "\n")
+                    
+                elif command == "/tokens":
+                    metrics = get_session_metrics()
+                    if not metrics.requests:
+                        console.print("\n  [yellow]No requests yet to calculate tokens.[/yellow]\n")
+                    else:
+                        last = metrics.requests[-1]
+                        tps = 0.0
+                        if last.inference_time_ms > 0:
+                            tps = (last.response_tokens / (last.inference_time_ms / 1000.0))
+                            
+                        console.print("\n  [bold cyan]Token Diagnostics (Last Request)[/bold cyan]")
+                        console.print(f"  [dim]Provider:[/dim] {last.provider}")
+                        console.print(f"  [dim]Model:[/dim] {last.model}")
+                        console.print(f"  [dim]Inference Time:[/dim] {last.inference_time_ms} ms")
+                        console.print()
+                        console.print(f"  [dim]Prompt Tokens:[/dim] {last.prompt_tokens}")
+                        console.print(f"  [dim]Response Tokens:[/dim] {last.response_tokens}")
+                        console.print(f"  [dim]Total Tokens:[/dim] {last.total_tokens}")
+                        console.print(f"  [dim]Tokens / Sec:[/dim] {tps:.1f}")
+                        console.print()
+
+                elif command == "/runtime":
+                    console.print("\n  [bold cyan]LM Studio Runtime Diagnostics[/bold cyan]")
+                    try:
+                        # Attempt to hit local API
+                        import requests
+                        resp = requests.get("http://localhost:1234/api/v0/models", timeout=2)
+                        if resp.status_code == 200 and resp.json().get("data"):
+                            models = resp.json()["data"]
+                            for m in models:
+                                console.print(f"  [dim]Loaded Model:[/dim] {m.get('id', 'Unknown')}")
+                                state = m.get("state", "Unknown")
+                                console.print(f"  [dim]State:[/dim] {state}")
+                        else:
+                            console.print("  [yellow]LM Studio /api/v0/models not available or returned no models.[/yellow]")
+                            console.print("  [dim]Note: Hardware details might require API v0 which is experimental.[/dim]")
+                    except Exception as e:
+                        console.print(f"  [red]Failed to connect to LM Studio: {e}[/red]")
+                    console.print()
+                    
+                elif command == "/perf":
+                    data = get_session_metrics().get_perf_summary()
+                    if data["status"] == "error":
+                        console.print(f"\n  [yellow]{data['error']}[/yellow]\n")
+                    else:
+                        console.print("\n  [bold cyan]Performance Summary[/bold cyan]")
+                        console.print("\n  [dim]Last Request:[/dim]")
+                        for k, v in data["last_request"].items():
+                            console.print(f"    {k}: {v}ms")
+                        console.print("\n  [dim]Session Average:[/dim]")
+                        for k, v in data["session_average"].items():
+                            console.print(f"    {k}: {v}ms")
+                        console.print()
+
+                elif command == "/perf_export":
+                    import json
+                    export_data = get_session_metrics().export_session_metrics()
+                    console.print("\n  [bold cyan]Session Metrics Export[/bold cyan]")
+                    console.print(json.dumps(export_data, indent=2))
+                    console.print()
+
+                elif command == "/model_stats":
+                    data = get_session_metrics().get_model_stats()
+                    console.print("\n  [bold cyan]Model Usage Stats[/bold cyan]")
+                    for provider, models in data.get("session_usage", {}).items():
+                        console.print(f"\n  [dim]{provider}[/dim]")
+                        for model, stats in models.items():
+                            console.print(f"    {model}: {stats['requests']} requests, {stats['avg_inference_s']}s avg inference")
+                    console.print()
+
+                elif command == "/fallbacks":
+                    logs = get_session_metrics().get_fallback_log()
+                    if not logs:
+                        console.print("\n  [dim]No fallback events in this session.[/dim]\n")
+                    else:
+                        console.print("\n  [bold cyan]Session Fallback Log[/bold cyan]")
+                        for log in logs:
+                            console.print(f"  [dim]{log['timestamp']}[/dim] {log['from_provider']} -> {log['to_provider']}: {log['reason']}")
+                        console.print()
+
                 elif command == "/router_test":
-                    if not args:
+                    if not cmd_args:
                         console.print("\n  [yellow]Usage: /router_test <query>[/yellow]\n")
                     else:
                         decision = systems["model_router"].route(args, [])
@@ -1701,6 +1829,27 @@ def chat_loop(systems: dict):
                 
                 # Print response
                 console.print(f"[bold green]Jarvis:[/bold green] {response.content}")
+                
+                # Phase 3: Response Diagnostics Footer
+                settings = get_settings()
+                if settings.system.show_model_debug:
+                    # Get context stats from the last trace
+                    last_ctx = systems["explainability_engine"].explain_last_context()
+                    mem_count = last_ctx.get("result", {}).get("memories_count", 0)
+                    know_count = last_ctx.get("result", {}).get("knowledge_count", 0)
+                    
+                    footer = systems["explainability_engine"].format_response_footer(
+                        provider=getattr(response, "provider_name", "unknown"),
+                        model=response.model,
+                        classification=getattr(response, "classification", "unknown"),
+                        memory_count=mem_count,
+                        knowledge_count=know_count,
+                        fallback_triggered=getattr(response, "fallback_triggered", False),
+                        inference_time_ms=getattr(response, "inference_time_ms", 0),
+                        total_time_ms=getattr(response, "routing_time_ms", 0) + getattr(response, "inference_time_ms", 0)
+                    )
+                    console.print(footer)
+                    
                 console.print()
 
                 clean_response = response.content

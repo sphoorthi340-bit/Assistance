@@ -28,14 +28,19 @@ logger = get_logger(__name__)
 
 @dataclass
 class CloudResponse:
+    """Standardized response from any cloud provider."""
     content: str
     provider: str
     model: str
+    total_duration_ms: int
+    cached: bool = False
     tokens_in: int = 0
     tokens_out: int = 0
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    total_tokens: int = 0
     estimated_cost_usd: float = 0.0
     response_time_ms: int = 0
-    cached: bool = False
     compressed: bool = False
 
 
@@ -109,6 +114,21 @@ class CloudLLM:
             if p != prefer:
                 candidates.append(p)
 
+        # ── TEMPORARY DEBUG LOGGING (Gemini quota diagnosis) ──────────
+        logger.warning(
+            "[CLOUD-DEBUG] complete() called: prefer=%s | candidates=%s | "
+            "prompt_len=%d | num_messages=%d",
+            prefer, candidates, len(prompt), len(messages)
+        )
+        for _cand in candidates:
+            _avail = self._pm.is_available(_cand)
+            _budget_ok = self._enforce_budget(_cand) if _avail else "N/A"
+            logger.warning(
+                "[CLOUD-DEBUG]   candidate=%s | is_available=%s | budget_ok=%s",
+                _cand, _avail, _budget_ok
+            )
+        # ── END DEBUG ─────────────────────────────────────────────────
+
         start_time = time.time()
         response = None
         selected_provider = None
@@ -148,6 +168,13 @@ class CloudLLM:
                     break
             except Exception as e:
                 err_str = str(e).lower()
+                # ── TEMPORARY DEBUG ───────────────────────────────────
+                logger.warning(
+                    "[CLOUD-DEBUG] EXCEPTION from %s: type=%s | "
+                    "full_error=%s",
+                    provider, type(e).__name__, str(e)[:500]
+                )
+                # ── END DEBUG ─────────────────────────────────────────
                 # Detect quota/rate-limit errors and mark the provider accordingly
                 if any(kw in err_str for kw in ("429", "quota", "rate_limit", "resource_exhausted",
                                                  "quota_exceeded", "requestsperday", "per_day")):
@@ -299,7 +326,35 @@ class CloudLLM:
         api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not set")
-            
+
+        # ── TEMPORARY DEBUG LOGGING (Gemini quota diagnosis) ──────────
+        _key_fingerprint = api_key[-6:] if api_key else "NONE"
+        _prompt_len = len(prompt)
+        _total_msg_chars = sum(len(m.get("content", "")) for m in messages) + _prompt_len
+        _est_tokens = _total_msg_chars // 4
+        logger.warning(
+            "[GEMINI-DEBUG] provider=gemini | model=%s | prompt_chars=%d | "
+            "total_chars=%d | est_tokens=%d | num_messages=%d | "
+            "api_key_fingerprint=...%s | max_tokens=%d | temperature=%.2f",
+            model, _prompt_len, _total_msg_chars, _est_tokens,
+            len(messages), _key_fingerprint, max_tokens, temperature
+        )
+        logger.warning(
+            "[GEMINI-DEBUG] prompt_preview: %.200s",
+            prompt[:200]
+        )
+        logger.warning(
+            "[GEMINI-DEBUG] message_roles: %s",
+            [m.get("role") for m in messages]
+        )
+        # Check if key matches the one in test_gemini.py (last 6 chars: "T5l0JA")
+        logger.warning(
+            "[GEMINI-DEBUG] API key match check: loaded_key[-6:]='%s' | "
+            "expected(test_gemini.py)='T5l0JA' | match=%s",
+            _key_fingerprint, _key_fingerprint == "T5l0JA"
+        )
+        # ── END DEBUG ─────────────────────────────────────────────────
+
         genai.configure(api_key=api_key)
         genai_model = genai.GenerativeModel(model)
         
@@ -328,7 +383,19 @@ class CloudLLM:
             final_prompt = system_instructions + prompt
             
         gemini_messages.append({"role": "user", "parts": [final_prompt]})
-        
+
+        # ── TEMPORARY DEBUG: Log final Gemini payload shape ──────────
+        _final_payload_chars = sum(len(str(m.get("parts", ""))) for m in gemini_messages)
+        logger.warning(
+            "[GEMINI-DEBUG] final_payload: num_gemini_msgs=%d | "
+            "total_payload_chars=%d | roles=%s",
+            len(gemini_messages), _final_payload_chars,
+            [m.get("role") for m in gemini_messages]
+        )
+        # Compare: test_gemini.py sends a single string "Say hello" directly
+        # Jarvis sends a list of {role, parts} dicts — this is valid but different
+        # ── END DEBUG ─────────────────────────────────────────────────
+
         response = genai_model.generate_content(
             gemini_messages,
             generation_config=genai.types.GenerationConfig(

@@ -18,6 +18,7 @@ from backend.logger import get_logger
 from backend.provider_manager import ProviderManager
 from backend.cloud_llm import CloudLLM, CloudResponse
 from backend.llm import OllamaClient, LLMResponse
+from backend.observability import get_session_metrics
 from configs.settings import get_settings
 
 logger = get_logger(__name__)
@@ -75,11 +76,18 @@ class ModelRouter:
     # -------------------------------------------------------------------
 
     def complete(self, message: str, conversation_history: list[dict] = None, system_prompt: str = None, conversation_id: str = None) -> LLMResponse:
+        import time
         start_time = time.time()
         conversation_history = conversation_history or []
+        fallback_triggered = False
+        fallback_from = None
+        fallback_reason = None
         
-        # 1. Classify
+        # 1. Classify (with routing timing)
+        routing_start = time.time()
         decision = self.route(message, conversation_history)
+        routing_time_ms = int((time.time() - routing_start) * 1000)
+        
         if conversation_id:
             decision.conversation_id = conversation_id
             
@@ -90,55 +98,119 @@ class ModelRouter:
             
         messages.extend(conversation_history)
         
+        # Derive a classification label
+        classification_label = "unknown"
+        if hasattr(self, '_derive_classification_label'):
+            classification_label = self._derive_classification_label(decision)
+        else:
+            classification_label = decision.complexity
+        
         # 3. Execute
+        inference_start = time.time()
+        
         if decision.selected_provider == "disabled":
             response = LLMResponse(content=f"Error: Required route disabled. {decision.reason}", model="system")
             self._log_routing(decision, 0)
-            return response
+            inference_time_ms = 0
+        else:
+            is_cloud = decision.selected_provider in self._pm.CLOUD_PROVIDERS
             
-        is_cloud = decision.selected_provider in self._pm.CLOUD_PROVIDERS
-        
-        try:
-            if is_cloud:
-                cloud_resp = self._cloud.complete(
-                    prompt=message,
-                    messages=messages,
-                    prefer=decision.selected_provider
-                )
-                
-                if cloud_resp:
-                    response = LLMResponse(
-                        content=cloud_resp.content,
-                        thinking="",
-                        raw_content=cloud_resp.content,
-                        model=cloud_resp.model,
-                        total_duration_ms=cloud_resp.response_time_ms,
-                        token_count=cloud_resp.tokens_in + cloud_resp.tokens_out
+            # Guard against cloud in local-only mode
+            if self._settings.mode.local_only_mode and (is_cloud or not decision.selected_provider):
+                raise RuntimeError("Both LM Studio and Ollama failed. No cloud fallback available in LOCAL_ONLY_MODE.")
+            
+            try:
+                if is_cloud:
+                    cloud_resp = self._cloud.complete(
+                        prompt=message,
+                        messages=messages,
+                        prefer=decision.selected_provider
                     )
+                    
+                    if cloud_resp:
+                        response = LLMResponse(
+                            content=cloud_resp.content,
+                            thinking="",
+                            raw_content=cloud_resp.content,
+                            model=cloud_resp.model,
+                            total_duration_ms=cloud_resp.response_time_ms,
+                            token_count=cloud_resp.tokens_in + cloud_resp.tokens_out
+                        )
+                    else:
+                        logger.warning("Cloud fallback failed, attempting local fallback")
+                        fallback_triggered = True
+                        fallback_from = decision.selected_provider
+                        fallback_reason = "Cloud returned empty response"
+                        get_session_metrics().record_fallback(
+                            from_provider=decision.selected_provider,
+                            to_provider="local",
+                            reason="Cloud returned empty response",
+                        )
+                        # Determine tier from the original classification so the fallback model is correct
+                        orig_tier = "reasoning"  # default for cloud-routed requests
+                        fallback = self._get_best_local(orig_tier, "Cloud failed")
+                        decision.selected_provider = fallback[0]
+                        decision.selected_model = fallback[1]
+                        decision.reason += f" (Cloud failed, fallback to local: {fallback[2]})"
+                        response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
                 else:
-                    logger.warning("Cloud fallback failed, attempting local fallback")
-                    # Determine tier from the original classification so the fallback model is correct
-                    orig_tier = "reasoning"  # default for cloud-routed requests
-                    fallback = self._get_best_local(orig_tier, "Cloud failed")
+                    response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
+                    
+            except Exception as e:
+                logger.error("Routing execution failed: %s", e)
+                fallback_triggered = True
+                orig_provider = decision.selected_provider
+                fallback_from = orig_provider
+                fallback_reason = str(e)
+                orig_tier = "reasoning"
+                try:
+                    fallback = self._get_best_local(orig_tier, f"Error fallback: {e}")
+                    get_session_metrics().record_fallback(
+                        from_provider=orig_provider,
+                        to_provider=fallback[0],
+                        reason=str(e),
+                    )
                     decision.selected_provider = fallback[0]
                     decision.selected_model = fallback[1]
-                    decision.reason += f" (Cloud failed, fallback to local: {fallback[2]})"
+                    decision.reason = f"Fallback after error: {e} | {fallback[2]}"
                     response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
-            else:
-                response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
-                
-        except Exception as e:
-            logger.error("Routing execution failed: %s", e)
-            orig_tier = "reasoning"
-            fallback = self._get_best_local(orig_tier, f"Error fallback: {e}")
-            decision.selected_provider = fallback[0]
-            decision.selected_model = fallback[1]
-            decision.reason = f"Fallback after error: {e} | {fallback[2]}"
-            response = self._call_local(decision.selected_provider, message, messages, decision.selected_model)
+                except Exception as fallback_err:
+                    if self._settings.mode.local_only_mode:
+                        raise RuntimeError("Both LM Studio and Ollama failed. No cloud fallback available in LOCAL_ONLY_MODE.") from fallback_err
+                    raise
+                    
+            inference_time_ms = int((time.time() - inference_start) * 1000)
 
-        # 4. Log routing decision
+        # 4. Record metrics
         duration_ms = int((time.time() - start_time) * 1000)
+        get_session_metrics().record_request(
+            routing_time_ms=routing_time_ms,
+            memory_time_ms=0, # Passed separately by memory system in practice, but we mock 0 here for now
+            knowledge_time_ms=0,
+            inference_time_ms=inference_time_ms,
+            total_time_ms=duration_ms,
+            provider=decision.selected_provider,
+            model=decision.selected_model,
+            classification=classification_label,
+            fallback_triggered=fallback_triggered,
+            fallback_from=fallback_from,
+            fallback_reason=fallback_reason,
+            prompt_tokens=getattr(response, 'prompt_tokens', 0),
+            response_tokens=getattr(response, 'response_tokens', 0),
+            total_tokens=getattr(response, 'total_tokens', 0)
+        )
+
+        # 5. Attach routing metadata to the response
+        setattr(response, 'provider_name', decision.selected_provider)
+        setattr(response, 'classification', classification_label)
+        setattr(response, 'routing_time_ms', routing_time_ms)
+        setattr(response, 'inference_time_ms', inference_time_ms)
+        setattr(response, 'fallback_triggered', fallback_triggered)
+        setattr(response, 'confidence', decision.confidence)
+
+        # 6. Log routing decision
         self._log_routing(decision, duration_ms)
+
         
         return response
 
@@ -293,12 +365,17 @@ Output JSON strictly matching this schema:
         if c_priv == "sensitive":
             return self._get_best_local(tier, "Privacy: Sensitive")
 
-        # 2. Standard Priority Enforcement via ProviderManager
-        optimal = self._pm.get_optimal_providers()
-        if not optimal:
+        # 3. Standard Priority Enforcement via ProviderManager
+        optimal_list = self._pm.get_optimal_providers()
+        local_only = self._settings.mode.local_only_mode
+        
+        if not optimal_list:
             return "disabled", "none", "No providers available."
+            
+        if local_only and all(p.name in self._pm.CLOUD_PROVIDERS for p in optimal_list):
+            return "disabled", "none", "Local-only mode active, but no local providers available"
 
-        best = optimal[0]
+        best = optimal_list[0]
 
         if best.is_local:
             # Resolve the provider-specific alias for this tier

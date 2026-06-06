@@ -120,6 +120,17 @@ class ProviderManager:
                 error=f"Unknown provider: {provider_name}",
             )
 
+        # Local-only mode: cloud providers are immediately disabled
+        if self._settings.mode.local_only_mode and provider_name in self.CLOUD_PROVIDERS:
+            status = HealthStatus(
+                provider_name=provider_name,
+                status="disabled",
+                error="Local-only mode active",
+                last_check=datetime.now(timezone.utc).isoformat(),
+            )
+            self._health_cache[provider_name] = status
+            return status
+
         provider_config = self._get_provider_config(provider_name)
         if not provider_config.enabled:
             status = HealthStatus(
@@ -193,7 +204,18 @@ class ProviderManager:
     def check_all_health(self) -> dict[str, HealthStatus]:
         """Run health checks for all enabled providers."""
         results = {}
+        local_only = self._settings.mode.local_only_mode
         for name in self.ALL_PROVIDERS:
+            # In local-only mode, skip cloud providers entirely
+            if local_only and name in self.CLOUD_PROVIDERS:
+                results[name] = HealthStatus(
+                    provider_name=name,
+                    status="disabled",
+                    error="Local-only mode active",
+                    last_check=datetime.now(timezone.utc).isoformat(),
+                )
+                self._health_cache[name] = results[name]
+                continue
             config = self._get_provider_config(name)
             if config.enabled:
                 results[name] = self.check_health(name)
@@ -337,6 +359,10 @@ class ProviderManager:
 
     def is_available(self, provider_name: str) -> bool:
         """Check if a provider is currently available for use."""
+        # Local-only mode: cloud providers are never available
+        if self._settings.mode.local_only_mode and provider_name in self.CLOUD_PROVIDERS:
+            return False
+
         # Check temporary disable
         if provider_name in self._disabled_until:
             if datetime.now(timezone.utc) < self._disabled_until[provider_name]:
@@ -454,6 +480,9 @@ class ProviderManager:
                 continue
 
             if is_offline and name in self.CLOUD_PROVIDERS:
+                continue
+
+            if self._settings.mode.local_only_mode and name in self.CLOUD_PROVIDERS:
                 continue
 
             if require_local and name in self.CLOUD_PROVIDERS:
@@ -613,6 +642,34 @@ class ProviderManager:
             }
 
         return result
+
+    def get_provider_status_summary(self) -> dict[str, dict]:
+        """
+        Return a compact status summary for every provider.
+
+        For local providers, checks their actual health.
+        For cloud providers in local_only_mode, always reports DISABLED.
+
+        Returns:
+            Dict mapping provider name to {'status': str, 'healthy': bool}.
+        """
+        local_only = self._settings.mode.local_only_mode
+        summary: dict[str, dict] = {}
+
+        for name in self.ALL_PROVIDERS:
+            if local_only and name in self.CLOUD_PROVIDERS:
+                summary[name] = {'status': 'DISABLED', 'healthy': False}
+                continue
+
+            cached = self._health_cache.get(name)
+            if not cached:
+                cached = self.check_health(name)
+
+            is_healthy = cached.status == 'healthy'
+            display_status = 'ACTIVE' if is_healthy else cached.status.upper()
+            summary[name] = {'status': display_status, 'healthy': is_healthy}
+
+        return summary
 
 
 # ---------------------------------------------------------------------------
