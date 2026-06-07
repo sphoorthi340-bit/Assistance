@@ -355,7 +355,7 @@ def initialize_system():
     # --- Phase 4: JARVIS System 4 ---
     console.print("  [dim]→[/dim] Initializing JARVIS System 4...", end="")
     try:
-        s4_memory = S4MemoryManager(db=db, settings=settings)
+        s4_memory = S4MemoryManager()
         academic_manager = AcademicManager(s4_memory=s4_memory, settings=settings)
         ms_roadmap = MSRoadmapManager(s4_memory=s4_memory, settings=settings)
         focus_guard = FocusGuard(s4_memory=s4_memory)
@@ -365,10 +365,8 @@ def initialize_system():
         s4_dispatcher = S4Dispatcher(
             role_manager=s4_role_manager,
             classifier=s4_classifier,
-            s4_memory=s4_memory,
-            academic_manager=academic_manager,
-            ms_roadmap=ms_roadmap,
-            focus_guard=focus_guard
+            db=db,
+            settings=settings
         )
         research_workflow = ResearchWorkflow(role_manager=s4_role_manager, s4_memory=s4_memory)
         console.print(" [green]✓[/green]")
@@ -1962,16 +1960,40 @@ def chat_loop(systems: dict):
                     db.add_message(conversation_id, "user", internal_user_msg)
                     
                     try:
-                        response = s4_dispatcher.dispatch(internal_user_msg, is_exam_mode=is_exam, conversation_id=conversation_id)
+                        # Fetch context
+                        s4_ctx = systems["context_builder"].get_s4_context(internal_user_msg)
+                        
+                        # Fetch history
+                        history_msgs = db.get_conversation_messages(
+                            conversation_id=conversation_id,
+                            limit=systems["settings"].memory.conversation_history_turns * 2
+                        )
+                        s4_history = [
+                            {"role": m["role"], "content": m["content"]}
+                            for m in history_msgs
+                            if m["role"] in ("user", "assistant") and m["content"] != internal_user_msg
+                        ]
+                        
+                        response = s4_dispatcher.dispatch(
+                            message=internal_user_msg,
+                            conversation_history=s4_history,
+                            context_kwargs=s4_ctx,
+                            is_exam_mode=is_exam,
+                            conversation_id=conversation_id
+                        )
                         console.print()
                         console.print(Panel(
-                            Markdown(response),
+                            Markdown(response.content),
                             title="JARVIS (System 4)",
                             border_style="green",
                             box=box.ROUNDED,
                             padding=(1, 2)
                         ))
-                        db.add_message(conversation_id, "assistant", response)
+                        # Optionally print the debug footer below the panel
+                        if systems["settings"].system.show_model_debug:
+                            console.print(f"  {response.debug_footer()}")
+                            
+                        db.add_message(conversation_id, "assistant", response.content)
                         # Extract memories as usual
                         systems["memory_manager"].extractor.extract_and_store(internal_user_msg, conversation_id)
                     except Exception as e:

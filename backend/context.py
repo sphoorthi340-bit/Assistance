@@ -151,6 +151,27 @@ class UnifiedContextBuilder:
                     len(ranked_context), len(accepted_history))
         return messages
 
+    def get_s4_context(self, user_message: str) -> dict:
+        """
+        Export formatted context for JARVIS System 4 (S4) injection.
+        Returns a dict matching the placeholders in S4 role prompts.
+        """
+        # Fetch items
+        state_items = self._get_state_snapshot()
+        memory_items = self._get_memories(user_message)
+        knowledge_items = self._get_knowledge(user_message)
+        
+        # Rank them briefly to stay within budget
+        all_items = state_items + memory_items + knowledge_items
+        budget = self._settings.context.total_budget_tokens - self._settings.context.history_budget_tokens
+        ranked = self._ranker.rank_and_truncate(all_items, budget_tokens=budget)
+        
+        return {
+            "state_snapshot": self._format_items([i for i in ranked if i.source == 'state'], "CURRENT SYSTEM STATE"),
+            "memories": self._format_items([i for i in ranked if i.source == 'memory'], "RELEVANT MEMORIES"),
+            "knowledge": self._format_items([i for i in ranked if i.source == 'knowledge'], "KNOWLEDGE BASE")
+        }
+
     # -----------------------------------------------------------------------
     # Source Gatherers
     # -----------------------------------------------------------------------

@@ -43,15 +43,52 @@ class S4Intent:
     requires_memory_update: bool = True
     metadata: dict = field(default_factory=dict)
 
+    def __post_init__(self):
+        """Sanitize inputs to protect against LLM schema hallucinations."""
+        if not isinstance(self.domain, str): self.domain = str(self.domain)
+        if not isinstance(self.subdomain, str): self.subdomain = str(self.subdomain)
+        if not isinstance(self.pattern, str): self.pattern = str(self.pattern)
+        
+        if isinstance(self.primary_role, list) and self.primary_role:
+            self.primary_role = str(self.primary_role[0])
+        elif not isinstance(self.primary_role, str):
+            self.primary_role = str(self.primary_role)
+            
+        flat_roles = []
+        if isinstance(self.secondary_roles, list):
+            for r in self.secondary_roles:
+                if isinstance(r, list) and r:
+                    flat_roles.append(str(r[0]))
+                elif isinstance(r, str):
+                    flat_roles.append(r)
+                elif r is not None:
+                    flat_roles.append(str(r))
+        elif isinstance(self.secondary_roles, str) and self.secondary_roles:
+            flat_roles.append(self.secondary_roles)
+        self.secondary_roles = flat_roles
+
     def to_routing_trace(self) -> str:
         """Human-readable routing explanation."""
-        roles = [self.primary_role]
-        if self.secondary_roles:
-            roles += self.secondary_roles
+        # Safely flatten roles in case LLM outputs nested lists
+        roles = []
+        if isinstance(self.primary_role, list):
+            roles.extend(str(x) for x in self.primary_role)
+        else:
+            roles.append(str(self.primary_role))
+            
+        if isinstance(self.secondary_roles, list):
+            for r in self.secondary_roles:
+                if isinstance(r, list):
+                    roles.extend(str(x) for x in r)
+                else:
+                    roles.append(str(r))
+        elif isinstance(self.secondary_roles, str):
+            roles.append(self.secondary_roles)
+            
         role_str = " → ".join(r.upper() for r in roles)
         return (
             f"Domain: {self.domain}.{self.subdomain} | "
-            f"Pattern: {self.pattern.upper()} | "
+            f"Pattern: {self.pattern.upper() if isinstance(self.pattern, str) else str(self.pattern).upper()} | "
             f"Roles: {role_str} | "
             f"Confidence: {self.confidence:.0%}"
         )
@@ -289,12 +326,17 @@ Output valid JSON only, no explanation:
             )
             self._rapid._model = original_model
             data = json.loads(resp["message"]["content"])
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]
+            if not isinstance(data, dict):
+                data = {}
+                
             return S4Intent(
-                domain=data.get("domain", "quick"),
-                subdomain=data.get("subdomain", "definition"),
-                primary_role=data.get("primary_role", "rapid"),
-                secondary_roles=data.get("secondary_roles", []),
-                pattern=data.get("pattern", "solo"),
+                domain=data.get("domain", "quick") if isinstance(data.get("domain"), str) else "quick",
+                subdomain=data.get("subdomain", "definition") if isinstance(data.get("subdomain"), str) else "definition",
+                primary_role=data.get("primary_role", "rapid") if isinstance(data.get("primary_role"), str) else "rapid",
+                secondary_roles=data.get("secondary_roles", []) if isinstance(data.get("secondary_roles"), list) else [],
+                pattern=data.get("pattern", "solo") if isinstance(data.get("pattern"), str) else "solo",
                 confidence=0.75,
             )
         except Exception as e:

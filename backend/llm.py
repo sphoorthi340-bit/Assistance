@@ -188,12 +188,17 @@ class OllamaClient:
                     attempt, self._max_retries, len(messages),
                 )
 
+                # Merge options
+                req_options = {
+                    "temperature": self._temperature,
+                }
+                if "options" in kwargs:
+                    req_options.update(kwargs.pop("options"))
+
                 response = self._client.chat(
                     model=self._model,
                     messages=messages,
-                    options={
-                        "temperature": self._temperature,
-                    },
+                    options=req_options,
                     **kwargs
                 )
 

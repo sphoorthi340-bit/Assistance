@@ -96,18 +96,28 @@ def _build_roles(settings=None) -> dict[str, ModelRole]:
 
     # Read model bindings from config
     s4 = getattr(s, "s4", None)
-    models_cfg = getattr(s4, "models", {}) if s4 else {}
+    models_cfg = getattr(s4, "models", None)
 
     def _get(role_key: str, default_provider: str, default_model: str,
              default_temp: float, default_tokens: int) -> tuple:
-        cfg = models_cfg.get(role_key, {})
-        if isinstance(cfg, dict):
-            return (
-                cfg.get("provider", default_provider),
-                cfg.get("model_id", default_model),
-                cfg.get("temperature", default_temp),
-                cfg.get("max_tokens", default_tokens),
-            )
+        if models_cfg and hasattr(models_cfg, role_key):
+            cfg = getattr(models_cfg, role_key)
+            if hasattr(cfg, "provider"):  # It's an S4RoleConfig object
+                mod_id = getattr(cfg, "model_id", "")
+                return (
+                    getattr(cfg, "provider", default_provider),
+                    mod_id if mod_id else default_model,
+                    getattr(cfg, "temperature", default_temp),
+                    getattr(cfg, "max_tokens", default_tokens),
+                )
+            elif isinstance(cfg, dict):
+                mod_id = cfg.get("model_id", "")
+                return (
+                    cfg.get("provider", default_provider),
+                    mod_id if mod_id else default_model,
+                    cfg.get("temperature", default_temp),
+                    cfg.get("max_tokens", default_tokens),
+                )
         return default_provider, default_model, default_temp, default_tokens
 
     chief_p, chief_m, chief_t, chief_tok = _get("chief", "lm_studio", "qwen3-4b", 0.7, 2048)
@@ -222,7 +232,8 @@ class S4RoleManager:
                 h = self._ollama.check_health()
                 return h.get("status") == "healthy"
             elif role.provider == "lm_studio" and self._lm_studio:
-                return self._lm_studio.is_healthy()
+                h = self._lm_studio.check_health()
+                return h.get("status") == "healthy"
             return False
         except Exception:
             return False
@@ -295,14 +306,15 @@ class S4RoleManager:
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             logger.error("Role '%s' call failed: %s", role_name, e)
-            # Try fallback to ollama reasoning tier
-            fallback = self._fallback_call(message, history, system_prompt)
+            # Try fallback to chief role
+            fallback = self._fallback_call(role_name, message, history, system_prompt)
             if fallback:
+                chief_role = self._roles.get("chief")
                 return RoleCallResult(
                     role_name=role_name,
                     content=f"[Fallback response]\n{fallback}",
-                    model_id="fallback",
-                    provider="ollama",
+                    model_id=chief_role.model_id if chief_role else "fallback",
+                    provider=chief_role.provider if chief_role else "fallback",
                     duration_ms=duration_ms,
                     success=True,
                     error=str(e)
@@ -331,7 +343,7 @@ class S4RoleManager:
             original_model = self._lm_studio._model
             self._lm_studio._model = role.model_id
             try:
-                resp = self._lm_studio.chat(messages)
+                resp = self._lm_studio.chat(messages, max_tokens=role.max_tokens, temperature=role.temperature)
                 return resp.content
             finally:
                 self._lm_studio._model = original_model
@@ -340,7 +352,7 @@ class S4RoleManager:
             original_model = self._ollama._model
             self._ollama._model = role.model_id
             try:
-                resp = self._ollama.chat(messages)
+                resp = self._ollama.chat(messages, options={"temperature": role.temperature, "num_predict": role.max_tokens})
                 return resp.content
             finally:
                 self._ollama._model = original_model
@@ -350,14 +362,16 @@ class S4RoleManager:
                 "Ensure LM Studio or Ollama is running."
             )
 
-    def _fallback_call(self, message: str, history: list, system_prompt: str) -> Optional[str]:
-        """Last-resort fallback using whatever local client is available."""
+    def _fallback_call(self, failed_role_name: str, message: str, history: list, system_prompt: str) -> Optional[str]:
+        """Last-resort fallback using the Chief role."""
+        if failed_role_name == "chief":
+            logger.error("Chief role failed, no further fallback available.")
+            return None
+            
         try:
-            if self._ollama:
-                messages = [{"role": "system", "content": system_prompt}] + history
-                messages.append({"role": "user", "content": message})
-                resp = self._ollama.chat(messages)
-                return resp.content
+            chief_role = self._roles.get("chief")
+            if chief_role:
+                return self._execute_call(chief_role, message, history, system_prompt)
         except Exception as e:
-            logger.error("Fallback call also failed: %s", e)
+            logger.error("Fallback to chief also failed: %s", e)
         return None

@@ -97,6 +97,7 @@ class S4Dispatcher:
         conversation_history: list = None,
         context_kwargs: dict = None,
         conversation_id: str = None,
+        is_exam_mode: bool = None,
     ) -> S4Response:
         """
         Main entry point. Classify and route a user message.
@@ -107,6 +108,7 @@ class S4Dispatcher:
             context_kwargs: Context for system prompt injection
                             (state_snapshot, memories, knowledge)
             conversation_id: Optional conversation ID for logging
+            is_exam_mode: Optional boolean to override default exam mode
 
         Returns:
             S4Response with content and full routing metadata
@@ -116,7 +118,8 @@ class S4Dispatcher:
         ctx = context_kwargs or {}
 
         # 1. Classify intent
-        intent = self._clf.classify(message, is_exam_mode=self._is_exam_mode)
+        effective_exam_mode = is_exam_mode if is_exam_mode is not None else self._is_exam_mode
+        intent = self._clf.classify(message, is_exam_mode=effective_exam_mode)
         logger.info("Dispatching: %s", intent.to_routing_trace())
 
         # 2. Execute collaboration pattern

@@ -69,66 +69,83 @@ class LMStudioClient:
                 "available_models": [],
             }
 
-    def chat(self, messages: list[dict]) -> LLMResponse:
+    def chat(self, messages: list[dict], **kwargs) -> LLMResponse:
         """
         Synchronous chat request.
         """
         start_time = time.time()
         
-        try:
-            # Map messages to strictly what OpenAI supports
-            mapped_messages = []
-            for msg in messages:
-                # OpenAI format matches standard role/content
-                mapped_messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+        last_error = None
+        max_retries = getattr(self, '_max_retries', 3)
+        
+        # Override defaults with kwargs if provided
+        req_temperature = kwargs.get("temperature", self._temperature)
+        req_max_tokens = kwargs.get("max_tokens", 2048)  # Prevent infinite KV cache allocation crash
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Map messages to strictly what OpenAI supports
+                mapped_messages = []
+                for msg in messages:
+                    # OpenAI format matches standard role/content
+                    mapped_messages.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
 
-            response = self._client.chat.completions.create(
-                model=self._model,
-                messages=mapped_messages,
-                temperature=self._temperature,
-            )
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=mapped_messages,
+                    temperature=req_temperature,
+                    max_tokens=req_max_tokens,
+                )
 
-            raw_content = response.choices[0].message.content
-            clean_content, thinking = parse_thinking_tokens(raw_content)
+                raw_content = response.choices[0].message.content
+                clean_content, thinking = parse_thinking_tokens(raw_content)
 
-            if self._strip_thinking:
-                final_content = clean_content
-            else:
-                final_content = raw_content
+                if self._strip_thinking:
+                    final_content = clean_content
+                else:
+                    final_content = raw_content
 
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            prompt_tokens = response.usage.prompt_tokens if response.usage else 0
-            response_tokens = response.usage.completion_tokens if response.usage else len(raw_content) // 4
-            total_tokens = response.usage.total_tokens if response.usage else prompt_tokens + response_tokens
-            token_count = response_tokens
+                duration_ms = int((time.time() - start_time) * 1000)
+                
+                prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+                response_tokens = response.usage.completion_tokens if response.usage else len(raw_content) // 4
+                total_tokens = response.usage.total_tokens if response.usage else prompt_tokens + response_tokens
+                token_count = response_tokens
 
-            return LLMResponse(
-                content=final_content,
-                thinking=thinking,
-                raw_content=raw_content,
-                model=self._model,
-                total_duration_ms=duration_ms,
-                token_count=token_count,
-                prompt_tokens=prompt_tokens,
-                response_tokens=response_tokens,
-                total_tokens=total_tokens
-            )
+                return LLMResponse(
+                    content=final_content,
+                    thinking=thinking,
+                    raw_content=raw_content,
+                    model=self._model,
+                    total_duration_ms=duration_ms,
+                    token_count=token_count,
+                    prompt_tokens=prompt_tokens,
+                    response_tokens=response_tokens,
+                    total_tokens=total_tokens
+                )
 
-        except Exception as e:
-            logger.error("LM Studio chat request failed: %s", e)
-            raise
+            except Exception as e:
+                last_error = e
+                logger.warning("LM Studio chat failed (attempt %d/%d): %s", attempt, max_retries, e)
+                if attempt < max_retries:
+                    time.sleep(2)
+        
+        logger.error("LM Studio chat request failed after %d attempts: %s", max_retries, last_error)
+        raise ConnectionError(f"Failed to get LLM response after {max_retries} attempts: {last_error}")
 
-    def chat_stream(self, messages: list[dict]) -> Generator[tuple[str, str, LLMResponse], None, None]:
+    def chat_stream(self, messages: list[dict], **kwargs) -> Generator[tuple[str, str, LLMResponse], None, None]:
         """
         Stream chat response.
         Yields (clean_chunk, thinking_chunk, None) during generation,
         and (final_clean, final_thinking, LLMResponse) at completion.
         """
         start_time = time.time()
+        
+        req_temperature = kwargs.get("temperature", self._temperature)
+        req_max_tokens = kwargs.get("max_tokens", 2048)
         
         try:
             mapped_messages = []
@@ -141,7 +158,8 @@ class LMStudioClient:
             stream = self._client.chat.completions.create(
                 model=self._model,
                 messages=mapped_messages,
-                temperature=self._temperature,
+                temperature=req_temperature,
+                max_tokens=req_max_tokens,
                 stream=True
             )
 
