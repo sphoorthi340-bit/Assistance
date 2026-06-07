@@ -72,6 +72,19 @@ from backend.analytics_engine import AnalyticsEngine
 from backend.proactive_layer import ProactiveLayer
 from backend.observability import get_session_metrics
 
+# Phase 4 Imports (JARVIS System 4)
+from memory.s4_memory import S4MemoryManager
+from backend.s4_roles import S4RoleManager
+from backend.s4_classifier import S4Classifier
+from backend.s4_dispatcher import S4Dispatcher
+from state.academic_manager import AcademicManager
+from state.ms_roadmap import MSRoadmapManager
+from backend.focus_guard import FocusGuard
+from backend.daily_workflow import generate_s4_morning_brief, generate_s4_evening_wrap
+from backend.weekly_review import WeeklyReviewEngine
+from backend.research_workflow import ResearchWorkflow
+from backend.dashboard_api import start_dashboard_api
+
 # Initialize logging FIRST — before anything else
 initialize_logging()
 logger = get_logger(__name__)
@@ -339,6 +352,42 @@ def initialize_system():
     console.print("  [dim]Type /help for commands. Type /quit to exit.[/dim]")
     console.print()
 
+    # --- Phase 4: JARVIS System 4 ---
+    console.print("  [dim]→[/dim] Initializing JARVIS System 4...", end="")
+    try:
+        s4_memory = S4MemoryManager(db=db, settings=settings)
+        academic_manager = AcademicManager(s4_memory=s4_memory, settings=settings)
+        ms_roadmap = MSRoadmapManager(s4_memory=s4_memory, settings=settings)
+        focus_guard = FocusGuard(s4_memory=s4_memory)
+        
+        s4_role_manager = S4RoleManager(ollama_client=llm, lm_studio_client=lm_studio_client)
+        s4_classifier = S4Classifier(rapid_client=llm)
+        s4_dispatcher = S4Dispatcher(
+            role_manager=s4_role_manager,
+            classifier=s4_classifier,
+            s4_memory=s4_memory,
+            academic_manager=academic_manager,
+            ms_roadmap=ms_roadmap,
+            focus_guard=focus_guard
+        )
+        research_workflow = ResearchWorkflow(role_manager=s4_role_manager, s4_memory=s4_memory)
+        console.print(" [green]✓[/green]")
+        # Start Dashboard API
+        console.print("  [dim]→[/dim] Starting Dashboard API Server...", end="")
+        dashboard_api = start_dashboard_api(
+            db=db,
+            s4_memory=s4_memory,
+            academic_manager=academic_manager,
+            ms_roadmap=ms_roadmap,
+            focus_guard=focus_guard
+        )
+        console.print(" [green]✓[/green] [dim](Port 8080)[/dim]")
+        
+    except Exception as e:
+        console.print(f" [red]✗[/red] {e}")
+        logger.critical("Phase 4 (S4) initialization failed: %s", str(e))
+        sys.exit(1)
+
     logger.info("System fully initialized")
     return {
         "settings": settings,
@@ -361,6 +410,15 @@ def initialize_system():
         "model_router": model_router,
         "analytics_engine": analytics_engine,
         "proactive_layer": proactive_layer,
+        "s4_memory": s4_memory,
+        "academic_manager": academic_manager,
+        "ms_roadmap": ms_roadmap,
+        "focus_guard": focus_guard,
+        "s4_role_manager": s4_role_manager,
+        "s4_classifier": s4_classifier,
+        "s4_dispatcher": s4_dispatcher,
+        "research_workflow": research_workflow,
+        "dashboard_api": dashboard_api,
     }
 
 
@@ -1331,12 +1389,108 @@ def handle_help():
         ("/router", "Show history of LLM routing decisions"),
         ("/help", "Show this help message"),
         ("/quit", "Exit Jarvis"),
+        # System 4
+        ("", "[bold]JARVIS System 4[/bold]"),
+        ("/s4 morning", "Generate morning brief"),
+        ("/s4 evening", "Generate evening wrap"),
+        ("/s4 review", "Run weekly review (Sunday)"),
+        ("/s4 focus [task]", "Start a focus session"),
+        ("/s4 stop_focus", "End current focus session"),
+        ("/s4 distract [type]", "Log a distraction event"),
     ]
     for cmd, desc in commands:
         table.add_row(cmd, desc)
 
     console.print(table)
     console.print()
+
+def handle_s4(systems: dict, subcommand: str, args: str):
+    """Handle JARVIS System 4 slash commands."""
+    if not systems["settings"].s4.enabled:
+        console.print("  [red]System 4 is currently disabled in config.yaml[/red]")
+        return
+
+    s4_memory = systems.get("s4_memory")
+    focus_guard = systems.get("focus_guard")
+    academic_manager = systems.get("academic_manager")
+    ms_roadmap = systems.get("ms_roadmap")
+    s4_role_manager = systems.get("s4_role_manager")
+
+    if not s4_memory:
+        console.print("  [red]S4 components not initialized.[/red]")
+        return
+
+    sub = subcommand.lower()
+
+    if sub == "morning":
+        from backend.daily_workflow import generate_s4_morning_brief
+        from rich.panel import Panel
+        from rich.markdown import Markdown
+        console.print("  [dim]Generating S4 Morning Brief (Chief)...[/dim]")
+        brief = generate_s4_morning_brief(
+            role_manager=s4_role_manager,
+            s4_memory=s4_memory,
+            academic_manager=academic_manager,
+            ms_roadmap=ms_roadmap,
+            goal_manager=systems.get("goal_manager"),
+            habit_manager=systems.get("habit_manager")
+        )
+        console.print(Panel(Markdown(brief), title="Morning Brief", border_style="cyan"))
+
+    elif sub == "evening":
+        from backend.daily_workflow import generate_s4_evening_wrap
+        from rich.panel import Panel
+        from rich.markdown import Markdown
+        console.print("  [dim]Generating S4 Evening Wrap (Chief)...[/dim]")
+        wrap = generate_s4_evening_wrap(
+            role_manager=s4_role_manager,
+            s4_memory=s4_memory,
+            focus_guard=focus_guard
+        )
+        console.print(Panel(Markdown(wrap), title="Evening Wrap", border_style="blue"))
+
+    elif sub == "review":
+        from backend.weekly_review import WeeklyReviewEngine
+        from rich.panel import Panel
+        from rich.markdown import Markdown
+        console.print("  [dim]Running S4 Weekly Review (Analyst + Chief)...[/dim]")
+        engine = WeeklyReviewEngine(
+            role_manager=s4_role_manager,
+            s4_memory=s4_memory,
+            academic_manager=academic_manager,
+            ms_roadmap=ms_roadmap
+        )
+        report = engine.run()
+        console.print(Panel(Markdown(report), title="Weekly Review", border_style="magenta"))
+
+    elif sub == "focus":
+        if focus_guard.has_active_session():
+            stats = focus_guard.get_session_stats()
+            console.print(f"  [cyan]Active Session:[/cyan] {stats['task']}")
+            console.print(f"  [dim]Elapsed: {stats['elapsed_minutes']}m | Pomodoros: {stats['pomodoros_completed']}[/dim]")
+        else:
+            task = args or "Deep Work"
+            focus_guard.start_session(task)
+            console.print(f"  [green]Focus session started:[/green] {task}")
+
+    elif sub == "stop_focus":
+        if focus_guard.has_active_session():
+            stats = focus_guard.stop_session()
+            console.print(f"  [green]Focus session ended.[/green] Score: {stats.focus_score}%")
+        else:
+            console.print("  [yellow]No active focus session.[/yellow]")
+
+    elif sub == "distract":
+        if focus_guard.has_active_session():
+            res = focus_guard.record_distraction(args or "other")
+            color = "red" if res.get("locked_down") else "yellow"
+            console.print(f"  [{color}]{res.get('message')}[/{color}]")
+        else:
+            console.print("  [yellow]No active focus session.[/yellow]")
+
+    else:
+        console.print("  [yellow]Unknown S4 command. Valid: morning, evening, review, focus, stop_focus, distract[/yellow]")
+
 
 
 # ---------------------------------------------------------------------------
@@ -1447,6 +1601,9 @@ def chat_loop(systems: dict):
 
                 elif command == "/help":
                     handle_help()
+
+                elif command == "/s4":
+                    handle_s4(systems, subcommand, args)
 
                 elif command == "/why":
                     handle_why(systems["explainability_engine"])
@@ -1794,6 +1951,33 @@ def chat_loop(systems: dict):
             internal_user_msg = user_input
             if action_executed:
                 internal_user_msg += "\n[System: Action was executed successfully based on the user's intent.]"
+
+            # --- Phase 4: S4 Chat Routing ---
+            if systems["settings"].s4.enabled and not action_executed:
+                s4_dispatcher = systems.get("s4_dispatcher")
+                if s4_dispatcher:
+                    is_exam = systems["academic_manager"].is_exam_mode() if "academic_manager" in systems else False
+                    console.print("  [dim]S4 Dispatcher routing...[/dim]")
+                    
+                    db.add_message(conversation_id, "user", internal_user_msg)
+                    
+                    try:
+                        response = s4_dispatcher.dispatch(internal_user_msg, is_exam_mode=is_exam, conversation_id=conversation_id)
+                        console.print()
+                        console.print(Panel(
+                            Markdown(response),
+                            title="JARVIS (System 4)",
+                            border_style="green",
+                            box=box.ROUNDED,
+                            padding=(1, 2)
+                        ))
+                        db.add_message(conversation_id, "assistant", response)
+                        # Extract memories as usual
+                        systems["memory_manager"].extractor.extract_and_store(internal_user_msg, conversation_id)
+                    except Exception as e:
+                        console.print(f"  [red]S4 Dispatcher failed: {e}[/red]")
+                        logger.error("S4 error", exc_info=True)
+                    continue  # Skip standard pipeline
 
             # --- Normal chat flow ---
 

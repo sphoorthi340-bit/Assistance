@@ -215,3 +215,49 @@ system:
     {knowledge}
 
     {conversation_history}
+
+# === JARVIS SYSTEM 4 EXTENSION ===
+s4:
+  enabled: true
+  
+  # --- User Profile ---
+  user_profile:
+    name: "User"
+    semester: 3
+    branch: "ECE"
+    target_cgpa: 8.5
+    current_cgpa: null
+    ms_target_year: 2028
+    
+  # --- Model Role Bindings ---
+  models:
+    chief:
+      role_name: "Chief of Staff"
+      provider: "lm_studio"
+      model_id: "qwen3-4b"
+      temperature: 0.7
+      max_tokens: 2048
+    analyst:
+      role_name: "Strategic Analyst"
+      provider: "lm_studio"
+      model_id: "phi-4-mini-reasoning"
+      temperature: 0.4
+      max_tokens: 3072
+    engineer:
+      role_name: "Lead Software Engineer"
+      provider: "lm_studio"
+      model_id: "qwen2.5-7b-instruct"
+      temperature: 0.3
+      max_tokens: 4096
+    mentor:
+      role_name: "Learning Mentor"
+      provider: "lm_studio"
+      model_id: "gemma-3-4b"
+      temperature: 0.8
+      max_tokens: 2048
+    rapid:
+      role_name: "Rapid Assistant"
+      provider: "ollama"
+      model_id: "qwen3-1.7b"
+      temperature: 0.5
+      max_tokens: 512

@@ -321,6 +321,37 @@ class ContextSettings(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Phase 4: S4 Extension
+# ---------------------------------------------------------------------------
+
+class S4RoleConfig(BaseModel):
+    role_name: str = ""
+    provider: str = "lm_studio"
+    model_id: str = ""
+    temperature: float = 0.7
+    max_tokens: int = 2048
+
+class S4ModelsConfig(BaseModel):
+    chief: S4RoleConfig = Field(default_factory=S4RoleConfig)
+    analyst: S4RoleConfig = Field(default_factory=S4RoleConfig)
+    engineer: S4RoleConfig = Field(default_factory=S4RoleConfig)
+    mentor: S4RoleConfig = Field(default_factory=S4RoleConfig)
+    rapid: S4RoleConfig = Field(default_factory=S4RoleConfig)
+
+class S4UserProfile(BaseModel):
+    name: str = "User"
+    semester: int = 3
+    branch: str = "ECE"
+    target_cgpa: float = 8.5
+    current_cgpa: Optional[float] = None
+    ms_target_year: int = 2028
+
+class S4Settings(BaseModel):
+    enabled: bool = True
+    user_profile: S4UserProfile = Field(default_factory=S4UserProfile)
+    models: S4ModelsConfig = Field(default_factory=S4ModelsConfig)
+
+# ---------------------------------------------------------------------------
 # Root settings model
 # ---------------------------------------------------------------------------
 
@@ -333,6 +364,7 @@ class JarvisSettings(BaseModel):
     router: RouterSettings = Field(default_factory=RouterSettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     proactive: ProactiveSettings = Field(default_factory=ProactiveSettings)
+    s4: S4Settings = Field(default_factory=S4Settings)
 
     # Existing subsystems (preserved)
     llm: LLMSettings = Field(default_factory=LLMSettings)

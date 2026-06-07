@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS S4 Dashboard</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <!-- CSS -->
+    <link rel="stylesheet" href="css/style.css">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="background-mesh"></div>
+    
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="brand">
+                <i class="fa-solid fa-microchip ai-icon"></i>
+                <h1>JARVIS <span class="badge">S4</span></h1>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active"><i class="fa-solid fa-chart-line"></i> Dashboard</a>
+                <a href="#" class="nav-item"><i class="fa-solid fa-graduation-cap"></i> Academics</a>
+                <a href="#" class="nav-item"><i class="fa-solid fa-plane-departure"></i> MS Roadmap</a>
+                <a href="#" class="nav-item"><i class="fa-solid fa-brain"></i> Focus & Memory</a>
+            </nav>
+            
+            <div class="user-profile">
+                <div class="avatar">
+                    <i class="fa-solid fa-user-astronaut"></i>
+                </div>
+                <div class="user-info">
+                    <p class="name">ECE Student</p>
+                    <p class="target">Target CGPA: <span id="target-cgpa-display">8.5</span></p>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="topbar">
+                <h2 class="page-title">Mission Control</h2>
+                <div class="status-indicators">
+                    <div class="status-pill exam-mode" id="exam-mode-pill" style="display: none;">
+                        <i class="fa-solid fa-triangle-exclamation"></i> EXAM MODE
+                    </div>
+                    <div class="status-pill active-focus" id="focus-pill" style="display: none;">
+                        <i class="fa-solid fa-stopwatch"></i> FOCUS ACTIVE
+                    </div>
+                    <div class="time-display" id="time-display">00:00</div>
+                </div>
+            </header>
+
+            <div class="dashboard-grid">
+                
+                <!-- Today's Stats -->
+                <section class="card glass-panel stats-card">
+                    <h3><i class="fa-solid fa-bolt"></i> Today's Pulse</h3>
+                    <div class="stats-row">
+                        <div class="stat-box">
+                            <span class="stat-value" id="stat-study-hours">0.0</span>
+                            <span class="stat-label">Study Hours</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-value" id="stat-pomodoros">0</span>
+                            <span class="stat-label">Pomodoros</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-value" id="stat-tasks">0</span>
+                            <span class="stat-label">Tasks Done</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Academic Overview -->
+                <section class="card glass-panel cgpa-card">
+                    <h3><i class="fa-solid fa-book-open"></i> Academic Status</h3>
+                    <div class="cgpa-display">
+                        <div class="circle-progress">
+                            <svg viewBox="0 0 36 36" class="circular-chart blue">
+                                <path class="circle-bg"
+                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                                <path class="circle" id="cgpa-circle"
+                                    stroke-dasharray="0, 100"
+                                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                            </svg>
+                            <div class="cgpa-text" id="current-cgpa">--</div>
+                        </div>
+                        <div class="cgpa-info">
+                            <p class="gap-text" id="cgpa-gap">Target: 8.5</p>
+                        </div>
+                    </div>
+                    <div class="upcoming-exams" id="upcoming-exams-list">
+                        <!-- Exam items inserted here -->
+                        <p class="empty-state">No exams tracked.</p>
+                    </div>
+                </section>
+
+                <!-- MS Roadmap Progress -->
+                <section class="card glass-panel ms-card">
+                    <h3><i class="fa-solid fa-globe"></i> MS Abroad Roadmap</h3>
+                    <div class="phase-indicator">
+                        <div class="phase-header">
+                            <span class="phase-label" id="ms-current-phase">Foundation Phase</span>
+                            <span class="phase-percent" id="ms-phase-percent">0%</span>
+                        </div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" id="ms-progress-bar" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="milestones-list" id="pending-milestones">
+                        <!-- Pending milestones inserted here -->
+                        <p class="empty-state">Loading milestones...</p>
+                    </div>
+                </section>
+
+                <!-- Weekly Focus Stats -->
+                <section class="card glass-panel weekly-card">
+                    <h3><i class="fa-solid fa-calendar-week"></i> Weekly Drive</h3>
+                    <div class="weekly-stats">
+                        <div class="stat-row">
+                            <span>Study Target</span>
+                            <span class="stat-number" id="weekly-study">0 / 0 h</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Papers Read</span>
+                            <span class="stat-number" id="weekly-papers">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Tasks Done</span>
+                            <span class="stat-number" id="weekly-tasks">0</span>
+                        </div>
+                    </div>
+                </section>
+                
+            </div>
+        </main>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
