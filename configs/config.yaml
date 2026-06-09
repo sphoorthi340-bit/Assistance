@@ -219,7 +219,10 @@ system:
 # === JARVIS SYSTEM 4 EXTENSION ===
 s4:
   enabled: true
-  
+  # Use one LM Studio model for all specialist roles (avoids GPU reload crashes)
+  single_model_mode: true
+  anchor_model: "qwen3-4b"
+
   # --- User Profile ---
   user_profile:
     name: "User"
@@ -240,7 +243,7 @@ s4:
     analyst:
       role_name: "Strategic Analyst"
       provider: "lm_studio"
-      model_id: "phi-4-mini-reasoning"
+      model_id: "microsoft/phi-4-mini-reasoning"
       temperature: 0.4
       max_tokens: 3072
     engineer:
@@ -252,12 +255,12 @@ s4:
     mentor:
       role_name: "Learning Mentor"
       provider: "lm_studio"
-      model_id: "gemma-3-4b"
+      model_id: "google/gemma-3-4b"
       temperature: 0.8
       max_tokens: 2048
     rapid:
       role_name: "Rapid Assistant"
       provider: "ollama"
-      model_id: "qwen3-1.7b"
+      model_id: "llama3.2:1b"
       temperature: 0.5
       max_tokens: 512

@@ -98,21 +98,46 @@ class S4Intent:
 # Keyword Rules
 # ---------------------------------------------------------------------------
 
+# Greetings and trivial messages — always route to Rapid on Ollama (fast, stable)
+GREETING_PATTERN = re.compile(
+    r"^(hi|hello|hey|yo|sup|hiya|howdy|good\s+(morning|evening|afternoon|night)|"
+    r"thanks|thank\s+you|thx|ok|okay|bye|goodbye|see\s+ya)[\s!.?]*$",
+    re.I,
+)
+
+# Multi-topic planning: study + side tasks + entertainment in one message
+COMPOUND_PLAN_PATTERN = re.compile(
+    r"(?:\bthen\b.*){2,}|"
+    r"(?=(?:\b(study|units?|jarvis|movie|episode|break|night|plan)\b.*){3,})",
+    re.I | re.S,
+)
+
 # Each entry: (compiled_regex, domain, subdomain, primary_role, secondary_roles, pattern)
 KEYWORD_RULES = [
 
     # ── QUICK (highest priority — fast path) ─────────────────────────────
+    (GREETING_PATTERN, "quick", "greeting", "rapid", [], "solo"),
     (re.compile(r"\bwhat (is|are|does)\b.{0,40}\?$", re.I), "quick", "definition", "rapid", [], "solo"),
     (re.compile(r"\bdefin(e|ition)\b", re.I), "quick", "definition", "rapid", [], "solo"),
     (re.compile(r"\bremind(er|me)?\b", re.I), "quick", "reminder", "rapid", [], "solo"),
     (re.compile(r"\b(how many|count|total|status)\b.{0,30}\?$", re.I), "quick", "status_check", "rapid", [], "solo"),
     (re.compile(r"\btl;?dr|summarize (this|that|it)\b", re.I), "quick", "summary", "rapid", [], "solo"),
 
+    # ── COMPOUND / MULTI-TASK (before single-domain rules) ───────────────
+    (COMPOUND_PLAN_PATTERN, "productivity", "daily_plan", "chief", [], "solo"),
+    (re.compile(
+        r"\b(study|revise|read).{0,30}(units?|chapters?|module).{0,60}"
+        r"(then|and|also).{0,200}(study|jarvis|movie|episode|break|plan|night)",
+        re.I | re.S,
+    ), "productivity", "daily_plan", "chief", [], "solo"),
+    (re.compile(r"\b(movie|film)s?.{0,40}(recommend|similar|like|suggest|watch)\b", re.I),
+     "productivity", "daily_plan", "chief", [], "solo"),
+
     # ── CODING ────────────────────────────────────────────────────────────
     (re.compile(r"\b(jarvis|system 4|s4).{0,30}(build|feature|add|implement|refactor|fix|bug|pr|commit)\b", re.I),
-     "coding", "jarvis_build", "engineer", ["analyst", "chief"], "pipeline"),
+     "coding", "jarvis_build", "engineer", [], "solo"),
     (re.compile(r"\b(project decision|major decision|project direction|architecture decision)\b", re.I),
-     "coding", "project_decision", "chief", ["analyst"], "verify"),
+     "coding", "project_decision", "chief", [], "solo"),
     (re.compile(r"\b(write|create|generate|implement).{0,20}(code|function|class|script|program)\b", re.I),
      "coding", "code_gen", "engineer", [], "solo"),
     (re.compile(r"\b(debug|fix|error|traceback|exception|bug|crash|not working|fails)\b", re.I),
@@ -120,7 +145,7 @@ KEYWORD_RULES = [
     (re.compile(r"\b(refactor|clean up|restructure|improve).{0,20}code\b", re.I),
      "coding", "refactor", "engineer", [], "solo"),
     (re.compile(r"\b(architecture|design pattern|module structure|how to structure)\b", re.I),
-     "coding", "architecture", "analyst", ["engineer"], "verify"),
+     "coding", "architecture", "analyst", [], "solo"),
     (re.compile(r"\b(python|c\+\+|cpp|javascript|typescript|sql|bash|shell script)\b", re.I),
      "coding", "code_gen", "engineer", [], "solo"),
 
@@ -136,19 +161,21 @@ KEYWORD_RULES = [
     (re.compile(r"\b(derive|derivation|prove|proof|integral|differential equation|"
                 r"laplace|fourier series|eigenvalue|matrix|determinant|"
                 r"solve for|find the value|calculate|theorem)\b", re.I),
-     "academic", "math", "analyst", ["mentor"], "pipeline"),
+     "academic", "math", "analyst", [], "solo"),
     (re.compile(r"\b(exam|test|viva|quiz).{0,20}(prep|prepare|study|ready|tips|strategy)\b", re.I),
-     "academic", "exam_prep", "mentor", ["chief"], "pipeline"),
+     "academic", "exam_prep", "mentor", [], "solo"),
     (re.compile(r"\b(study plan|revision schedule|how.{0,10}study for|allocate time|timetable)\b", re.I),
-     "academic", "study_plan", "chief", ["analyst"], "verify"),
+     "academic", "study_plan", "chief", [], "solo"),
+    (re.compile(r"\b(study|revise).{0,20}(for|units?|chapters?)\b", re.I),
+     "academic", "study_plan", "chief", [], "solo"),
     (re.compile(r"\b(cgpa|gpa|marks|grade|attendance|backlog)\b", re.I),
      "academic", "study_plan", "chief", [], "solo"),
 
     # ── RESEARCH ─────────────────────────────────────────────────────────
     (re.compile(r"\b(arxiv|paper|research paper|publication|journal|conference|ieee|acm)\b", re.I),
-     "research", "paper_analysis", "analyst", ["mentor"], "verify"),
+     "research", "paper_analysis", "analyst", [], "solo"),
     (re.compile(r"\b(literature review|state of the art|related work|survey)\b", re.I),
-     "research", "literature_review", "analyst", ["mentor"], "pipeline"),
+     "research", "literature_review", "analyst", [], "solo"),
     (re.compile(r"\b(research gap|open problem|future work|what.{0,10}nobody|unsolved)\b", re.I),
      "research", "research_gap", "analyst", [], "solo"),
     (re.compile(r"\b(find papers|suggest papers|papers on|recent work on)\b", re.I),
@@ -161,24 +188,24 @@ KEYWORD_RULES = [
     # ── CAREER / MS ABROAD ───────────────────────────────────────────────
     (re.compile(r"\b(ms abroad|masters|graduate school|phd|university|"
                 r"application|admit|admit|sop|statement of purpose|lor|recommendation)\b", re.I),
-     "career", "ms_roadmap", "chief", ["analyst"], "verify"),
+     "career", "ms_roadmap", "chief", [], "solo"),
     (re.compile(r"\b(gre|toefl|ielts|english test|vocab|quantitative reasoning)\b", re.I),
      "career", "ms_roadmap", "analyst", [], "solo"),
     (re.compile(r"\b(internship|job|placement|career|linkedin|resume|cv|"
                 r"cold email|professor outreach|networking)\b", re.I),
      "career", "profile_audit", "analyst", [], "solo"),
     (re.compile(r"\b(should i|which (is better|option|path)|career decision|choose between)\b", re.I),
-     "career", "career_decision", "analyst", ["chief", "mentor"], "council"),
+     "career", "career_decision", "analyst", [], "solo"),
 
     # ── PRODUCTIVITY ─────────────────────────────────────────────────────
     (re.compile(r"\b(morning brief|good morning|what should i do today|daily plan|plan (my|the) day)\b", re.I),
      "productivity", "daily_plan", "chief", [], "solo"),
     (re.compile(r"\b(weekly review|this week|week in review|how did i do|weekly summary)\b", re.I),
-     "productivity", "weekly_review", "chief", ["analyst"], "pipeline"),
+     "productivity", "weekly_review", "chief", [], "solo"),
     (re.compile(r"\b(prioritize|what.{0,10}next|most important|focus on|what should i work on)\b", re.I),
      "productivity", "task_triage", "chief", [], "solo"),
     (re.compile(r"\b(distracted|youtube|netflix|procrastinat|can.?t focus|losing focus|off track)\b", re.I),
-     "productivity", "distraction", "rapid", ["chief"], "verify"),
+     "productivity", "distraction", "rapid", [], "solo"),
     (re.compile(r"\b(pomodoro|focus (session|timer|mode)|start focus|begin work)\b", re.I),
      "productivity", "focus", "rapid", [], "solo"),
 ]
@@ -208,14 +235,17 @@ class S4Classifier:
         _confidence_threshold: Min Stage 1 confidence before triggering Stage 2.
     """
 
-    def __init__(self, rapid_client=None, confidence_threshold: float = 0.65):
+    def __init__(self, rapid_client=None, confidence_threshold: float = 0.65, settings=None):
         """
         Args:
             rapid_client: An initialized OllamaClient (used for LLM classification)
             confidence_threshold: Stage 1 scores below this trigger Stage 2
+            settings: App settings (for classifier model alias)
         """
+        from configs.settings import get_settings
         self._rapid = rapid_client
         self._threshold = confidence_threshold
+        self._settings = settings or get_settings()
         logger.info("S4Classifier initialized (threshold=%.2f)", confidence_threshold)
 
     def classify(self, message: str, is_exam_mode: bool = False) -> S4Intent:
@@ -233,8 +263,14 @@ class S4Classifier:
         # Stage 1: keyword heuristics
         intent, confidence = self._keyword_classify(message)
 
-        # Stage 2: LLM fallback if confidence is low
-        if confidence < self._threshold and self._rapid:
+        # Stage 2: LLM fallback only when keywords are ambiguous (never for greetings)
+        msg_stripped = message.strip()
+        skip_llm = (
+            GREETING_PATTERN.match(msg_stripped)
+            or len(msg_stripped) < 20
+            or confidence >= 0.80
+        )
+        if confidence < self._threshold and self._rapid and not skip_llm:
             llm_intent = self._llm_classify(message)
             if llm_intent:
                 intent = llm_intent
@@ -243,11 +279,18 @@ class S4Classifier:
         intent.confidence = confidence
         intent.is_emergency = is_exam_mode
 
-        # Emergency mode override: boost academic + speed up patterns
+        # Emergency mode override: boost academic routing
         if is_exam_mode and intent.domain == "academic":
-            if intent.pattern == "council":
-                intent.pattern = "pipeline"
             intent.metadata["exam_mode_active"] = True
+
+        # Local stability: avoid multi-model patterns (LM Studio single-GPU reloads)
+        if intent.pattern not in ("solo", "verify", "pipeline", "council"):
+            intent.pattern = "solo"
+            intent.secondary_roles = []
+        elif intent.pattern in ("verify", "pipeline", "council"):
+            logger.debug("Downgrading pattern %s -> solo for local stability", intent.pattern)
+            intent.secondary_roles = []
+            intent.pattern = "solo"
 
         logger.debug(
             "Classified: '%s' → %s.%s [%s] (%.0f%% conf)",
@@ -280,14 +323,20 @@ class S4Classifier:
         if length < 40:
             return S4Intent(
                 domain="quick", subdomain="definition",
-                primary_role="rapid", pattern="solo", confidence=0.55,
-            ), 0.55
+                primary_role="rapid", pattern="solo", confidence=0.85,
+            ), 0.85
         elif length < 150:
             return S4Intent(
                 domain="productivity", subdomain="task_triage",
                 primary_role="chief", pattern="solo", confidence=0.45,
             ), 0.45
         else:
+            # Long ambiguous messages are usually multi-task planning, not tutoring
+            if re.search(r"\b(study|plan|then|jarvis|movie|episode|break)\b", msg, re.I):
+                return S4Intent(
+                    domain="productivity", subdomain="daily_plan",
+                    primary_role="chief", pattern="solo", confidence=0.70,
+                ), 0.70
             return S4Intent(
                 domain="academic", subdomain="concept",
                 primary_role="mentor", pattern="solo", confidence=0.40,
@@ -317,12 +366,15 @@ Output valid JSON only, no explanation:
   "pattern": "solo" | "verify" | "pipeline" | "council"
 }}"""
         try:
+            classifier_model = self._settings.local_models.get_model_for("classifier", "ollama")
+            if not classifier_model:
+                classifier_model = "llama3.2:1b"
             original_model = self._rapid._model
-            self._rapid._model = "llama3.2:1b"  # Use fast classifier model
+            self._rapid._model = classifier_model
             resp = self._rapid._client.chat(
-                model="llama3.2:1b",
+                model=classifier_model,
                 messages=[{"role": "user", "content": prompt}],
-                format="json"
+                format="json",
             )
             self._rapid._model = original_model
             data = json.loads(resp["message"]["content"])

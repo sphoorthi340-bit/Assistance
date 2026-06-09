@@ -1,0 +1,164 @@
+{
+  "version": "4.0",
+  "created": "2026-06-07",
+  "target_year": 2028,
+  "current_phase": "foundation",
+  "milestones": [
+    {
+      "id": "m1",
+      "phase": "foundation",
+      "description": "Identify 10 target universities (AIoT/Edge AI programs)",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m2",
+      "phase": "foundation",
+      "description": "Start GRE prep (30 min/day minimum)",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m3",
+      "phase": "foundation",
+      "description": "Read 2 research papers/week for 4 consecutive weeks",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m4",
+      "phase": "foundation",
+      "description": "Make JARVIS demo-ready for portfolio",
+      "done": false,
+      "done_date": null,
+      "priority": 1
+    },
+    {
+      "id": "m5",
+      "phase": "foundation",
+      "description": "Create GitHub profile showcasing ECE + AI projects",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m6",
+      "phase": "research",
+      "description": "First professor cold email outreach (min 5 emails)",
+      "done": false,
+      "done_date": null,
+      "priority": 1
+    },
+    {
+      "id": "m7",
+      "phase": "research",
+      "description": "Contribute to 1 open-source Edge AI / TinyML project",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m8",
+      "phase": "research",
+      "description": "Submit or present a research paper",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m9",
+      "phase": "research",
+      "description": "Complete GRE practice test (target score)",
+      "done": false,
+      "done_date": null,
+      "priority": 1
+    },
+    {
+      "id": "m10",
+      "phase": "application",
+      "description": "SOP first draft complete",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m11",
+      "phase": "application",
+      "description": "GRE exam taken",
+      "done": false,
+      "done_date": null,
+      "priority": 1
+    },
+    {
+      "id": "m12",
+      "phase": "application",
+      "description": "TOEFL / IELTS exam taken",
+      "done": false,
+      "done_date": null,
+      "priority": 1
+    },
+    {
+      "id": "m13",
+      "phase": "application",
+      "description": "Resume tailored for MS applications",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m14",
+      "phase": "application",
+      "description": "LOR requests sent to 3 professors",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m15",
+      "phase": "decision",
+      "description": "All applications submitted",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m16",
+      "phase": "decision",
+      "description": "Visa and financial planning complete",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    },
+    {
+      "id": "m17",
+      "phase": "decision",
+      "description": "Final university decision made",
+      "done": false,
+      "done_date": null,
+      "priority": 2
+    }
+  ],
+  "universities": [],
+  "gre": {
+    "status": "not_started",
+    "score": null,
+    "target": 320
+  },
+  "toefl": {
+    "status": "not_started",
+    "score": null,
+    "target": 105
+  },
+  "research_experience": [],
+  "publications": [],
+  "monthly_checkpoints": [],
+  "target_domains": [
+    "AIoT",
+    "Edge AI",
+    "TinyML",
+    "Embedded Systems"
+  ]
+}

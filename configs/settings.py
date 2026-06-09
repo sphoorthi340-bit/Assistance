@@ -348,6 +348,8 @@ class S4UserProfile(BaseModel):
 
 class S4Settings(BaseModel):
     enabled: bool = True
+    single_model_mode: bool = True
+    anchor_model: str = "qwen3-4b"
     user_profile: S4UserProfile = Field(default_factory=S4UserProfile)
     models: S4ModelsConfig = Field(default_factory=S4ModelsConfig)
 

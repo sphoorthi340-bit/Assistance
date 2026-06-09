@@ -22,6 +22,33 @@ from configs.settings import get_settings
 
 logger = get_logger(__name__)
 
+
+def resolve_model_id(model_id: str, available_models: list[str]) -> str:
+    """Map a configured model ID to an exact provider model name when possible."""
+    if not model_id or not available_models:
+        return model_id
+    if model_id in available_models:
+        return model_id
+
+    model_lower = model_id.lower()
+    for candidate in available_models:
+        if candidate.lower() == model_lower:
+            return candidate
+
+    # Suffix match (e.g. phi-4-mini-reasoning -> microsoft/phi-4-mini-reasoning)
+    for candidate in available_models:
+        if candidate.lower().endswith("/" + model_lower) or candidate.lower().endswith(model_lower):
+            return candidate
+
+    norm = model_lower.replace("-", "").replace("/", "").replace("_", "")
+    for candidate in available_models:
+        cand_norm = candidate.lower().replace("-", "").replace("/", "").replace("_", "")
+        if norm in cand_norm or cand_norm.endswith(norm):
+            return candidate
+
+    return model_id
+
+
 # ---------------------------------------------------------------------------
 # Data Structures
 # ---------------------------------------------------------------------------
@@ -84,6 +111,7 @@ class RoleCallResult:
     duration_ms: int
     success: bool
     error: Optional[str] = None
+    fallback_used: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +149,12 @@ def _build_roles(settings=None) -> dict[str, ModelRole]:
         return default_provider, default_model, default_temp, default_tokens
 
     chief_p, chief_m, chief_t, chief_tok = _get("chief", "lm_studio", "qwen3-4b", 0.7, 2048)
-    analyst_p, analyst_m, analyst_t, analyst_tok = _get("analyst", "lm_studio", "phi-4-mini-reasoning", 0.4, 3072)
+    analyst_p, analyst_m, analyst_t, analyst_tok = _get(
+        "analyst", "lm_studio", "microsoft/phi-4-mini-reasoning", 0.4, 3072
+    )
     engineer_p, engineer_m, engineer_t, engineer_tok = _get("engineer", "lm_studio", "qwen2.5-7b-instruct", 0.3, 4096)
-    mentor_p, mentor_m, mentor_t, mentor_tok = _get("mentor", "lm_studio", "gemma-3-4b", 0.8, 2048)
-    rapid_p, rapid_m, rapid_t, rapid_tok = _get("rapid", "ollama", "qwen3-1.7b", 0.5, 512)
+    mentor_p, mentor_m, mentor_t, mentor_tok = _get("mentor", "lm_studio", "google/gemma-3-4b", 0.8, 2048)
+    rapid_p, rapid_m, rapid_t, rapid_tok = _get("rapid", "ollama", "llama3.2:1b", 0.5, 512)
 
     return {
         "chief": ModelRole(
@@ -208,7 +238,63 @@ class S4RoleManager:
         self._lm_studio = lm_studio_client
         self._settings = settings or get_settings()
         self._roles = _build_roles(self._settings)
+        self._resolve_role_models()
+        self._apply_single_model_mode()
         logger.info("S4RoleManager initialized with %d roles", len(self._roles))
+
+    def _apply_single_model_mode(self) -> None:
+        """Collapse all LM Studio roles onto one anchor model to avoid GPU reloads."""
+        s4 = getattr(self._settings, "s4", None)
+        if not s4 or not getattr(s4, "single_model_mode", True):
+            return
+
+        anchor = getattr(s4, "anchor_model", "qwen3-4b")
+        lm_models = self._provider_models("lm_studio")
+        anchor_resolved = resolve_model_id(anchor, lm_models)
+
+        for role in self._roles.values():
+            if role.name == "rapid":
+                continue
+            if role.provider == "lm_studio":
+                if role.model_id != anchor_resolved:
+                    logger.info(
+                        "Single-model mode: %s %s -> %s",
+                        role.name, role.model_id, anchor_resolved,
+                    )
+                role.model_id = anchor_resolved
+
+    def _provider_models(self, provider: str) -> list[str]:
+        try:
+            if provider == "ollama" and self._ollama:
+                health = self._ollama.check_health()
+            elif provider == "lm_studio" and self._lm_studio:
+                health = self._lm_studio.check_health()
+            else:
+                return []
+            if health.get("status") == "healthy":
+                return health.get("available_models", [])
+        except Exception as e:
+            logger.warning("Failed to fetch models for provider '%s': %s", provider, e)
+        return []
+
+    def _resolve_role_models(self) -> None:
+        """Resolve configured model IDs to exact provider names at startup."""
+        for role in self._roles.values():
+            available = self._provider_models(role.provider)
+            resolved = resolve_model_id(role.model_id, available)
+            if resolved != role.model_id:
+                logger.info(
+                    "Resolved S4 role '%s' model: %s -> %s",
+                    role.name, role.model_id, resolved,
+                )
+                role.model_id = resolved
+
+    def _role_model_available(self, role: ModelRole) -> bool:
+        available = self._provider_models(role.provider)
+        if not available:
+            return False
+        resolved = resolve_model_id(role.model_id, available)
+        return resolved in available
 
     # -------------------------------------------------------------------
     # Role Access
@@ -223,17 +309,23 @@ class S4RoleManager:
         return self._roles.copy()
 
     def is_available(self, role_name: str) -> bool:
-        """Check if the underlying provider for a role is reachable."""
+        """Check if the provider is reachable and the role's model is loaded."""
         role = self._roles.get(role_name)
         if not role:
             return False
         try:
             if role.provider == "ollama" and self._ollama:
                 h = self._ollama.check_health()
-                return h.get("status") == "healthy"
+                if h.get("status") != "healthy":
+                    return False
+                return resolve_model_id(role.model_id, h.get("available_models", [])) in h.get(
+                    "available_models", []
+                )
             elif role.provider == "lm_studio" and self._lm_studio:
                 h = self._lm_studio.check_health()
-                return h.get("status") == "healthy"
+                if h.get("status") != "healthy":
+                    return False
+                return self._role_model_available(role)
             return False
         except Exception:
             return False
@@ -306,18 +398,19 @@ class S4RoleManager:
         except Exception as e:
             duration_ms = int((time.time() - start) * 1000)
             logger.error("Role '%s' call failed: %s", role_name, e)
-            # Try fallback to chief role
-            fallback = self._fallback_call(role_name, message, history, system_prompt)
-            if fallback:
-                chief_role = self._roles.get("chief")
+            fallback_text, fallback_meta = self._fallback_call(
+                role_name, message, history, system_prompt
+            )
+            if fallback_text:
                 return RoleCallResult(
                     role_name=role_name,
-                    content=f"[Fallback response]\n{fallback}",
-                    model_id=chief_role.model_id if chief_role else "fallback",
-                    provider=chief_role.provider if chief_role else "fallback",
+                    content=fallback_text,
+                    model_id=fallback_meta.get("model_id", "fallback"),
+                    provider=fallback_meta.get("provider", "fallback"),
                     duration_ms=duration_ms,
                     success=True,
-                    error=str(e)
+                    error=str(e),
+                    fallback_used=True,
                 )
             return RoleCallResult(
                 role_name=role_name, content="", model_id=role.model_id,
@@ -343,7 +436,13 @@ class S4RoleManager:
             original_model = self._lm_studio._model
             self._lm_studio._model = role.model_id
             try:
-                resp = self._lm_studio.chat(messages, max_tokens=role.max_tokens, temperature=role.temperature)
+                resp = self._lm_studio.chat(
+                    messages,
+                    max_tokens=role.max_tokens,
+                    temperature=role.temperature,
+                    max_retries=3,
+                    timeout=60,
+                )
                 return resp.content
             finally:
                 self._lm_studio._model = original_model
@@ -352,7 +451,11 @@ class S4RoleManager:
             original_model = self._ollama._model
             self._ollama._model = role.model_id
             try:
-                resp = self._ollama.chat(messages, options={"temperature": role.temperature, "num_predict": role.max_tokens})
+                resp = self._ollama.chat(
+                    messages,
+                    options={"temperature": role.temperature, "num_predict": role.max_tokens},
+                    max_retries=1,
+                )
                 return resp.content
             finally:
                 self._ollama._model = original_model
@@ -362,16 +465,82 @@ class S4RoleManager:
                 "Ensure LM Studio or Ollama is running."
             )
 
-    def _fallback_call(self, failed_role_name: str, message: str, history: list, system_prompt: str) -> Optional[str]:
-        """Last-resort fallback using the Chief role."""
-        if failed_role_name == "chief":
-            logger.error("Chief role failed, no further fallback available.")
-            return None
-            
-        try:
-            chief_role = self._roles.get("chief")
-            if chief_role:
-                return self._execute_call(chief_role, message, history, system_prompt)
-        except Exception as e:
-            logger.error("Fallback to chief also failed: %s", e)
-        return None
+    def _fallback_call(
+        self, failed_role_name: str, message: str, history: list, system_prompt: str
+    ) -> tuple[Optional[str], dict]:
+        """Fallback chain: Ollama fast -> Ollama reasoning -> Chief LM retry.
+
+        Fast model runs first because LM Studio often still holds the GPU;
+        loading a 7B Ollama model alongside it typically OOMs (exit code 2).
+        """
+        attempts: list[tuple[str, ModelRole]] = []
+        failed_role = self._roles.get(failed_role_name)
+        prompt_file = (
+            failed_role.system_prompt_file if failed_role
+            else "configs/s4_prompts/rapid.txt"
+        )
+        fallback_temp = failed_role.temperature if failed_role else 0.7
+        fallback_tokens = failed_role.max_tokens if failed_role else 2048
+        fast_tokens = 1024 if failed_role_name != "rapid" else 512
+
+        if self._ollama:
+            fast_model = self._settings.local_models.get_model_for("fast", "ollama")
+            reasoning_model = self._settings.local_models.get_model_for("reasoning", "ollama")
+
+            if fast_model:
+                attempts.append((
+                    "ollama_fast",
+                    ModelRole(
+                        name=failed_role_name,
+                        display_name=failed_role.display_name if failed_role else "Fallback",
+                        provider="ollama",
+                        model_id=fast_model,
+                        system_prompt_file=prompt_file,
+                        temperature=fallback_temp if failed_role_name != "rapid" else 0.5,
+                        max_tokens=fast_tokens,
+                    ),
+                ))
+
+            if reasoning_model and reasoning_model != fast_model and failed_role_name != "rapid":
+                attempts.append((
+                    "ollama_reasoning",
+                    ModelRole(
+                        name=failed_role_name,
+                        display_name=failed_role.display_name if failed_role else "Fallback",
+                        provider="ollama",
+                        model_id=reasoning_model,
+                        system_prompt_file=prompt_file,
+                        temperature=fallback_temp,
+                        max_tokens=fallback_tokens,
+                    ),
+                ))
+
+        if failed_role_name != "chief":
+            chief = self._roles.get("chief")
+            if chief:
+                attempts.append(("chief", chief))
+
+        for label, role in attempts:
+            try:
+                if role.provider == "ollama":
+                    if not self._ollama:
+                        continue
+                    h = self._ollama.check_health()
+                    if h.get("status") != "healthy":
+                        continue
+                    if resolve_model_id(role.model_id, h.get("available_models", [])) not in h.get(
+                        "available_models", []
+                    ):
+                        continue
+                elif role.provider == "lm_studio":
+                    if not self._lm_studio or not self._role_model_available(role):
+                        continue
+
+                content = self._execute_call(role, message, history, system_prompt)
+                logger.warning("S4 fallback via '%s' succeeded after '%s' failed", label, failed_role_name)
+                return content, {"model_id": role.model_id, "provider": role.provider}
+            except Exception as e:
+                logger.error("Fallback '%s' failed: %s", label, e)
+
+        logger.error("All fallbacks exhausted for role '%s'", failed_role_name)
+        return None, {}

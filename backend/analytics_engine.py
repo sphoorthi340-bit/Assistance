@@ -12,7 +12,6 @@ from typing import Optional
 
 from backend.database import DatabaseManager
 from backend.logger import get_logger
-from backend.model_router import ModelRouter
 from state.analytics_manager import AnalyticsManager
 from configs.settings import get_settings
 

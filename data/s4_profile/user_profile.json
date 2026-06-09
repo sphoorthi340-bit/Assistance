@@ -1,0 +1,12 @@
+{
+  "version": "4.0",
+  "name": "User",
+  "semester": 3,
+  "branch": "ECE",
+  "goals": {
+    "target_cgpa": 8.5,
+    "current_cgpa": null,
+    "ms_target_year": 2028
+  },
+  "last_updated": "2026-06-07"
+}

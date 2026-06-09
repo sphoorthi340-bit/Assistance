@@ -112,11 +112,22 @@ def initialize_system():
     settings = get_settings()
     local_only = settings.mode.local_only_mode
     
-    if local_only:
+    s4_mode = settings.s4.enabled
+    if s4_mode:
         console.print(
             Panel(
-                "[bold cyan]JARVIS[/bold cyan] [dim]Phase 3 Development Mode[/dim]\n"
-                "[dim]Local-Only Testing — Cloud Providers Disabled[/dim]",
+                "[bold cyan]JARVIS[/bold cyan] [bold magenta]System 4[/bold magenta]\n"
+                "[dim]Personal Cognitive OS — Local-First Multi-Role Assistant[/dim]",
+                border_style="magenta",
+                box=box.DOUBLE,
+                padding=(1, 4),
+            )
+        )
+    elif local_only:
+        console.print(
+            Panel(
+                "[bold cyan]JARVIS[/bold cyan] [dim]Local-Only Mode[/dim]\n"
+                "[dim]Cloud Providers Disabled[/dim]",
                 border_style="magenta",
                 box=box.DOUBLE,
                 padding=(1, 4),
@@ -125,7 +136,7 @@ def initialize_system():
     else:
         console.print(
             Panel(
-                "[bold cyan]JARVIS[/bold cyan] [dim]v3.0[/dim]\n"
+                "[bold cyan]JARVIS[/bold cyan] [dim]v4.0[/dim]\n"
                 "[dim]Personal Cognitive Infrastructure[/dim]",
                 border_style="cyan",
                 box=box.DOUBLE,
@@ -248,62 +259,37 @@ def initialize_system():
         logger.critical("Knowledge Pipeline initialization failed: %s", str(e))
         sys.exit(1)
 
-    # --- Phase 3: Core Infrastructure ---
-    console.print("  [dim]→[/dim] Initializing Phase 3 Engine...", end="")
+    # --- LLM providers (System 4 uses S4RoleManager; Phase 3 router optional) ---
+    console.print("  [dim]→[/dim] Initializing LLM providers...", end="")
+    provider_manager = None
+    cloud_llm = None
+    model_router = None
     try:
         from backend.lm_studio import LMStudioClient
         lm_studio_client = LMStudioClient(settings=settings)
-        
-        provider_manager = ProviderManager(db=db, settings=settings)
         explainability_engine = ExplainabilityEngine(db=db, settings=settings)
-        cloud_llm = CloudLLM(db=db, provider_manager=provider_manager, vector_store=vector_store, settings=settings)
-        model_router = ModelRouter(
-            provider_manager=provider_manager,
-            cloud_llm=cloud_llm,
-            ollama_client=llm,
-            lm_studio_client=lm_studio_client,
-            db=db,
-            settings=settings
-        )
         analytics_engine = AnalyticsEngine(db=db, analytics_manager=analytics_manager, settings=settings)
         proactive_layer = ProactiveLayer(db=db, analytics_manager=analytics_manager, settings=settings)
+
+        if not settings.s4.enabled:
+            provider_manager = ProviderManager(db=db, settings=settings)
+            cloud_llm = CloudLLM(
+                db=db, provider_manager=provider_manager,
+                vector_store=vector_store, settings=settings,
+            )
+            model_router = ModelRouter(
+                provider_manager=provider_manager,
+                cloud_llm=cloud_llm,
+                ollama_client=llm,
+                lm_studio_client=lm_studio_client,
+                db=db,
+                settings=settings,
+            )
         console.print(" [green]✓[/green]")
     except Exception as e:
         console.print(f" [red]✗[/red] {e}")
-        logger.critical("Phase 3 initialization failed: %s", str(e))
+        logger.critical("LLM provider initialization failed: %s", str(e))
         sys.exit(1)
-
-    # --- Startup Model Alias Validation ---
-    console.print("\n  [bold cyan]=== MODEL ALIAS VALIDATION ===[/bold cyan]")
-    _tiers = ["fast", "reasoning", "coding", "math", "classifier"]
-    _local_providers = ["ollama", "lm_studio"]
-    
-    # Pre-fetch health for local providers once
-    _local_health: dict = {}
-    for _prov in _local_providers:
-        _h = provider_manager.check_health(_prov)
-        _local_health[_prov] = _h
-    
-    for _tier in _tiers:
-        console.print(f"\n  [dim]{_tier.upper()}[/dim]")
-        for _prov in _local_providers:
-            _model_name = settings.local_models.get_model_for(_tier, _prov)
-            _prov_health = _local_health.get(_prov)
-            _prov_label = "Ollama" if _prov == "ollama" else "LM Studio"
-            
-            if not _model_name:
-                console.print(f"    {_prov_label}:  [dim](not configured)[/dim]")
-                continue
-            
-            if _prov_health and _prov_health.status == "healthy" and _model_name in _prov_health.available_models:
-                console.print(f"    {_prov_label}:  {_model_name}  [green]✓ FOUND[/green]")
-            elif _prov_health and _prov_health.status != "healthy":
-                console.print(f"    {_prov_label}:  {_model_name}  [dim]─ PROVIDER OFFLINE[/dim]")
-            else:
-                console.print(f"    {_prov_label}:  {_model_name}  [yellow]⚠ NOT FOUND[/yellow]")
-                logger.warning("Alias validation: model '%s' not found on %s for tier '%s'", _model_name, _prov, _tier)
-
-    console.print()
 
 
     # --- Context Builder (Unified) ---
@@ -321,11 +307,13 @@ def initialize_system():
     console.print("  [dim]→[/dim] Starting background scheduler...", end="")
     try:
         scheduler = JarvisScheduler(
-            db=db, 
-            vector_store=vector_store, 
-            memory_extractor=extractor, 
-            analytics_manager=analytics_manager, 
-            settings=settings
+            db=db,
+            vector_store=vector_store,
+            memory_extractor=extractor,
+            analytics_manager=analytics_manager,
+            settings=settings,
+            analytics_engine=analytics_engine,
+            proactive_layer=proactive_layer,
         )
         scheduler.start()
         console.print(" [green]✓[/green]")
@@ -361,7 +349,7 @@ def initialize_system():
         focus_guard = FocusGuard(s4_memory=s4_memory)
         
         s4_role_manager = S4RoleManager(ollama_client=llm, lm_studio_client=lm_studio_client)
-        s4_classifier = S4Classifier(rapid_client=llm)
+        s4_classifier = S4Classifier(rapid_client=llm, settings=settings)
         s4_dispatcher = S4Dispatcher(
             role_manager=s4_role_manager,
             classifier=s4_classifier,
@@ -370,6 +358,26 @@ def initialize_system():
         )
         research_workflow = ResearchWorkflow(role_manager=s4_role_manager, s4_memory=s4_memory)
         console.print(" [green]✓[/green]")
+
+        # S4 role model validation
+        if settings.s4.single_model_mode:
+            console.print(
+                f"  [dim]Single-model mode: all LM Studio roles → "
+                f"{settings.s4.anchor_model}[/dim]"
+            )
+        console.print("\n  [bold cyan]=== S4 ROLE MODEL VALIDATION ===[/bold cyan]")
+        s4_health = s4_role_manager.health_report()
+        for role_name, info in s4_health.items():
+            status = "[green]✓ READY[/green]" if info["available"] else "[yellow]⚠ UNAVAILABLE[/yellow]"
+            console.print(
+                f"    {role_name.upper():8}  {info['model_id']} ({info['provider']})  {status}"
+            )
+            if not info["available"]:
+                logger.warning(
+                    "S4 role '%s' unavailable — model '%s' on %s",
+                    role_name, info["model_id"], info["provider"],
+                )
+        console.print()
         # Start Dashboard API
         console.print("  [dim]→[/dim] Starting Dashboard API Server...", end="")
         dashboard_api = start_dashboard_api(
@@ -1395,6 +1403,7 @@ def handle_help():
         ("/s4 focus [task]", "Start a focus session"),
         ("/s4 stop_focus", "End current focus session"),
         ("/s4 distract [type]", "Log a distraction event"),
+        ("/s4 route <msg>", "Preview S4 routing (no LLM call)"),
     ]
     for cmd, desc in commands:
         table.add_row(cmd, desc)
@@ -1486,8 +1495,23 @@ def handle_s4(systems: dict, subcommand: str, args: str):
         else:
             console.print("  [yellow]No active focus session.[/yellow]")
 
+    elif sub == "route":
+        s4_dispatcher = systems.get("s4_dispatcher")
+        if not s4_dispatcher:
+            console.print("  [red]S4 dispatcher not initialized.[/red]")
+            return
+        if not args.strip():
+            console.print("  [yellow]Usage: /s4 route <message>[/yellow]")
+            return
+        is_exam = academic_manager.is_exam_mode() if academic_manager else False
+        s4_dispatcher.set_exam_mode(is_exam)
+        console.print(f"  [dim]{s4_dispatcher.dry_run(args.strip())}[/dim]")
+
     else:
-        console.print("  [yellow]Unknown S4 command. Valid: morning, evening, review, focus, stop_focus, distract[/yellow]")
+        console.print(
+            "  [yellow]Unknown S4 command. Valid: morning, evening, review, "
+            "focus, stop_focus, distract, route[/yellow]"
+        )
 
 
 
@@ -1726,7 +1750,15 @@ def chat_loop(systems: dict):
                 elif command == "/router_test":
                     if not cmd_args:
                         console.print("\n  [yellow]Usage: /router_test <query>[/yellow]\n")
-                    else:
+                    elif systems.get("s4_dispatcher"):
+                        is_exam = (
+                            systems["academic_manager"].is_exam_mode()
+                            if systems.get("academic_manager") else False
+                        )
+                        systems["s4_dispatcher"].set_exam_mode(is_exam)
+                        console.print("\n  [cyan]S4 Routing Preview:[/cyan]")
+                        console.print(f"  [dim]{systems['s4_dispatcher'].dry_run(args)}[/dim]\n")
+                    elif systems.get("model_router"):
                         decision = systems["model_router"].route(args, [])
                         console.print("\n  [cyan]Router Dry-Run Results:[/cyan]")
                         console.print(f"  [dim]Input:[/dim] {args}")
@@ -1735,6 +1767,8 @@ def chat_loop(systems: dict):
                         console.print(f"  [dim]Selected Provider:[/dim] [green]{decision.selected_provider}[/green]")
                         console.print(f"  [dim]Selected Model:[/dim] [green]{decision.selected_model}[/green]")
                         console.print(f"  [dim]Reason:[/dim] {decision.reason}\n")
+                    else:
+                        console.print("\n  [yellow]No router available. Enable S4 in config.yaml.[/yellow]\n")
                         
                 elif command == "/db_health":
                     try:
@@ -1955,6 +1989,7 @@ def chat_loop(systems: dict):
                 s4_dispatcher = systems.get("s4_dispatcher")
                 if s4_dispatcher:
                     is_exam = systems["academic_manager"].is_exam_mode() if "academic_manager" in systems else False
+                    s4_dispatcher.set_exam_mode(is_exam)
                     console.print("  [dim]S4 Dispatcher routing...[/dim]")
                     
                     db.add_message(conversation_id, "user", internal_user_msg)
@@ -1994,94 +2029,71 @@ def chat_loop(systems: dict):
                             console.print(f"  {response.debug_footer()}")
                             
                         db.add_message(conversation_id, "assistant", response.content)
-                        # Extract memories as usual
-                        systems["memory_manager"].extractor.extract_and_store(internal_user_msg, conversation_id)
+                        stored = systems["memory_manager"].process_message(
+                            message=user_input,
+                            role="user",
+                            conversation_id=conversation_id,
+                        )
+                        if stored:
+                            for mem in stored:
+                                console.print(
+                                    f"  [dim]📝 Memory stored: [{mem['type']}] "
+                                    f"{mem['content'][:60]}...[/dim]"
+                                )
                     except Exception as e:
                         console.print(f"  [red]S4 Dispatcher failed: {e}[/red]")
                         logger.error("S4 error", exc_info=True)
-                    continue  # Skip standard pipeline
+                    continue  # System 4 handled this turn
 
-            # --- Normal chat flow ---
+            # Legacy Phase 3 chat path (only when S4 is disabled)
+            if systems["settings"].s4.enabled:
+                console.print(
+                    "  [red]S4 dispatcher unavailable. Check startup logs.[/red]\n"
+                )
+                continue
 
-            # Step 1: Store user message
-            db.add_message(
-                conversation_id=conversation_id,
-                role="user",
-                content=internal_user_msg,
-            )
+            if not systems.get("model_router"):
+                console.print(
+                    "  [red]No chat backend available. Set s4.enabled: true in config.yaml.[/red]\n"
+                )
+                continue
 
-            # Step 2: Build context (retrieves memories + history)
+            db.add_message(conversation_id=conversation_id, role="user", content=internal_user_msg)
             messages = context_builder.build_messages(
                 user_message=internal_user_msg,
                 conversation_id=conversation_id,
             )
 
-            # Step 3: Get LLM response (routed)
             console.print()
             console.print("  [dim]Jarvis is thinking...[/dim]", end="\r")
 
             try:
-                # Use ModelRouter for execution
-                model_router = systems["model_router"]
-                response = model_router.complete(
+                response = systems["model_router"].complete(
                     message=internal_user_msg,
                     conversation_history=messages,
-                    system_prompt=None,  # ContextBuilder already handles this
-                    conversation_id=conversation_id
+                    system_prompt=None,
+                    conversation_id=conversation_id,
                 )
-
-                # Clear "thinking" line
                 console.print(" " * 50, end="\r")
-                
-                # Print response
                 console.print(f"[bold green]Jarvis:[/bold green] {response.content}")
-                
-                # Phase 3: Response Diagnostics Footer
-                settings = get_settings()
-                if settings.system.show_model_debug:
-                    # Get context stats from the last trace
-                    last_ctx = systems["explainability_engine"].explain_last_context()
-                    mem_count = last_ctx.get("result", {}).get("memories_count", 0)
-                    know_count = last_ctx.get("result", {}).get("knowledge_count", 0)
-                    
-                    footer = systems["explainability_engine"].format_response_footer(
-                        provider=getattr(response, "provider_name", "unknown"),
-                        model=response.model,
-                        classification=getattr(response, "classification", "unknown"),
-                        memory_count=mem_count,
-                        knowledge_count=know_count,
-                        fallback_triggered=getattr(response, "fallback_triggered", False),
-                        inference_time_ms=getattr(response, "inference_time_ms", 0),
-                        total_time_ms=getattr(response, "routing_time_ms", 0) + getattr(response, "inference_time_ms", 0)
-                    )
-                    console.print(footer)
-                    
-                console.print()
-
                 clean_response = response.content
                 thinking_content = response.thinking
-
             except Exception as e:
                 console.print(f"\n  [red]Error: {str(e)}[/red]\n")
                 logger.error("LLM request failed: %s", str(e), exc_info=True)
                 continue
 
-            # Step 4: Store assistant response
             db.add_message(
                 conversation_id=conversation_id,
                 role="assistant",
                 content=clean_response,
                 thinking=thinking_content if thinking_content else None,
             )
-
-            # Step 5: Extract and store memories from user message
             stored = memory_manager.process_message(
                 message=user_input,
                 role="user",
                 conversation_id=conversation_id,
             )
-
-            # Show memory extraction feedback (subtle)
             if stored:
                 for mem in stored:
                     console.print(
@@ -2093,6 +2105,10 @@ def chat_loop(systems: dict):
         except KeyboardInterrupt:
             console.print("\n\n  [cyan]Interrupted. Type /quit to exit properly.[/cyan]\n")
             continue
+
+        except EOFError:
+            console.print("\n  [cyan]Input closed. Goodbye![/cyan]\n")
+            break
 
         except Exception as e:
             console.print(f"\n  [red]Unexpected error: {str(e)}[/red]\n")

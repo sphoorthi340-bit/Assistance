@@ -13,25 +13,43 @@ logger = get_logger(__name__)
 class JarvisScheduler:
     """Manages background tasks for Jarvis."""
 
-    def __init__(self, db, vector_store, memory_extractor, analytics_manager, settings=None):
+    def __init__(
+        self,
+        db,
+        vector_store,
+        memory_extractor,
+        analytics_manager,
+        settings=None,
+        analytics_engine=None,
+        proactive_layer=None,
+    ):
         self._db = db
         self._vector_store = vector_store
         self._memory_extractor = memory_extractor
         self._analytics_manager = analytics_manager
         self._settings = settings or get_settings()
 
-        # Phase 3 Enhancements
-        self._analytics_engine = None
-        self._proactive_layer = None
-        
-        # Load enhanced components if available
-        try:
-            from backend.analytics_engine import AnalyticsEngine
-            from backend.proactive_layer import ProactiveLayer
-            self._analytics_engine = AnalyticsEngine(self._db, self._analytics_manager, self._settings)
-            self._proactive_layer = ProactiveLayer(self._db, self._analytics_manager, self._settings)
-        except ImportError:
-            logger.warning("Phase 3 components (Analytics/Proactive) not found. Scheduler will run in legacy mode.")
+        # Reuse shared instances from main.py when provided
+        self._analytics_engine = analytics_engine
+        self._proactive_layer = proactive_layer
+
+        if self._analytics_engine is None or self._proactive_layer is None:
+            try:
+                from backend.analytics_engine import AnalyticsEngine
+                from backend.proactive_layer import ProactiveLayer
+                if self._analytics_engine is None:
+                    self._analytics_engine = AnalyticsEngine(
+                        self._db, self._analytics_manager, self._settings
+                    )
+                if self._proactive_layer is None:
+                    self._proactive_layer = ProactiveLayer(
+                        self._db, self._analytics_manager, self._settings
+                    )
+            except ImportError:
+                logger.warning(
+                    "Phase 3 components (Analytics/Proactive) not found. "
+                    "Scheduler will run in legacy mode."
+                )
 
         self._scheduler = BackgroundScheduler()
         self._setup_jobs()

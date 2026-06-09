@@ -1,0 +1,27 @@
+{
+  "date": "2026-06-07",
+  "session_start": null,
+  "session_end": null,
+  "tasks_planned": [],
+  "tasks_completed": [],
+  "tasks_deferred": [],
+  "study_hours_by_subject": {},
+  "pomodoros_completed": 0,
+  "pomodoros_broken": 0,
+  "total_focused_minutes": 0,
+  "distraction_incidents": [],
+  "papers_read": [],
+  "coding_minutes": 0,
+  "jarvis_commits": 0,
+  "wins": [],
+  "blockers": [],
+  "morning_brief_generated": true,
+  "evening_wrap_generated": false,
+  "model_interactions": {
+    "chief": 0,
+    "analyst": 0,
+    "engineer": 0,
+    "mentor": 0,
+    "rapid": 0
+  }
+}

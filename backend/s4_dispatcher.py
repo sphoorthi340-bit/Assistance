@@ -9,7 +9,7 @@ Orchestrates multi-model collaboration using 4 patterns:
   COUNCIL  — models run in parallel; Chief synthesizes the results
 
 The Dispatcher is the brain of System 4. Every user message enters here.
-The existing ModelRouter handles provider-level fallback INSIDE each role call.
+S4RoleManager handles per-role LLM calls and provider-level fallback directly.
 """
 
 import time
@@ -84,7 +84,8 @@ class S4Dispatcher:
         self._rm = role_manager
         self._clf = classifier
         self._db = db
-        self._is_exam_mode = False  # Externally set by AcademicManager
+        self._settings = settings
+        self._is_exam_mode = False
         logger.info("S4Dispatcher initialized")
 
     # -------------------------------------------------------------------
@@ -188,7 +189,7 @@ class S4Dispatcher:
             "content": result.content if result.success else self._error_response(result),
             "roles_consulted": [intent.primary_role],
             "role_times_ms": {intent.primary_role: result.duration_ms},
-            "fallback_used": not result.success,
+            "fallback_used": result.fallback_used or not result.success,
         }
 
     def _run_verify(

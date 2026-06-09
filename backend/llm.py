@@ -180,12 +180,13 @@ class OllamaClient:
             LLMResponse with clean content, thinking, and metadata.
         """
         last_error = None
+        max_retries = kwargs.pop("max_retries", self._max_retries)
 
-        for attempt in range(1, self._max_retries + 1):
+        for attempt in range(1, max_retries + 1):
             try:
                 logger.debug(
                     "LLM request attempt %d/%d — %d messages",
-                    attempt, self._max_retries, len(messages),
+                    attempt, max_retries, len(messages),
                 )
 
                 # Merge options
@@ -234,16 +235,16 @@ class OllamaClient:
                 last_error = e
                 logger.warning(
                     "LLM request failed (attempt %d/%d): %s",
-                    attempt, self._max_retries, str(e),
+                    attempt, max_retries, str(e),
                 )
-                if attempt < self._max_retries:
+                if attempt < max_retries:
                     sleep_time = 2 ** attempt  # Exponential backoff
                     time.sleep(sleep_time)
 
         # All retries exhausted
-        logger.error("LLM request failed after %d attempts: %s", self._max_retries, last_error)
+        logger.error("LLM request failed after %d attempts: %s", max_retries, last_error)
         raise ConnectionError(
-            f"Failed to get LLM response after {self._max_retries} attempts: {last_error}"
+            f"Failed to get LLM response after {max_retries} attempts: {last_error}"
         )
 
     def chat_stream(
